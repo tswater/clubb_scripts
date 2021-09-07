@@ -28,15 +28,15 @@ blank_run = '/home/tsw35/soteria/clubb/clubb_scripts/run_/' # a clean run folder
 cbin_dir  = '/home/tsw35/soteria/software/CLUBB/bin/' # bin for clubb
 
 # run options
-dirname = 'conv_0v2' # name of main directory created
-k       = 50 # (max) number of clusters 
+dirname = 'test_frcs' # name of main directory created
+k       = 2 # (max) number of clusters 
 conv    = True # if True, will setup multiple runs up to k clusters
 nx      = 1000 # number of gridcells in each direction
 dx      = 100 # resolution of surface grid in meters
 stdate  = '2017-07-16T10:00:00.000'# start date iso format
 enddate = '2017-07-17T03:00:00.000'# end date iso format
 save_c  = True # True will save the clusters and surface grids
-customk = True
+customk = False
 skip_zm = False
 skip_sf = False
 clst_1  = True # if true, only cluster one time for whole time domain
@@ -274,7 +274,7 @@ for i in list(range(len(klist)))[rank::size]:
     ki = klist[i]
     for j in range(1,ki+1):
         rfile = w_dir+'/k_'+str(ki)+'/c_'+str(j)+'/run_scripts/run_scm.bash'
-        subprocess.run('./'+rfile+' arm',shell=True)
+        subprocess.run(rfile+' arm',shell=True)
 
 comm.Barrier()
 

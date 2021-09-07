@@ -21,8 +21,8 @@ import shutil
 agg_zm_var = []
 n_rest     = 5
 delta_t    = 60 # in seconds, for CLUBB
-dT_ref     = 20 # reference temperature; larger gives less exchange
-dr_ref     = .015 # reference rtm; larger gives less exchange .015
+dsmooth    = 4 # number of p levels over which to switch sign of circ flux
+T0         = 300 # reference temperature; matched to CLUBB
 
 # directories
 sfc_dir   = '/stor/soteria/hydro/shared/sgp_surfaces/dx0100nx1000/'
@@ -34,11 +34,15 @@ cbin_dir  = '/home/tsw35/soteria/software/CLUBB/bin/' # bin for clubb
 k       = 2 # number of clusters
 nx      = 1000 # number of gridcells in each direction
 dx      = 100  # resolution of surface grid in meters
+dz      = 40 # dz
 zmax    = 10000
 nz      = 251
 stdate  = '2017-07-16T12:00:00.000'# start date iso format
 enddate = '2017-07-17T03:00:00.000'# end date iso format
 dirname = 'test_cpl3'
+l_het   =  10000 # Lengthscale of heterogeneity in meters
+# FIXME as nate for a better first guess of l_het after we give him baby space
+z_r     = 5000 # height where we switch sign of circulation flux
 
 #### PARSE ####
 
@@ -51,17 +55,21 @@ prs.add_argument('-i', action='store', dest='dir', default=dirname)
 prs.add_argument('-s', action='store', dest='start', default=stdate)
 prs.add_argument('-e', action='store', dest='end',default=enddate)
 prs.add_argument('-c', action='store', dest='sfc',default=sfc_dir)
+prs.add_argument('-l', action='store', dest='l_het',default=l_het)
+prs.add_argument('-z', action='store', dest='z_r',default=z_r)
+
 args = prs.parse_args()
 
 #### FILL IN ####
-
-k = args.k
-nx = args.nx
-dx = args.dx
-stdate = args.start
+k       = args.k
+nx      = args.nx
+dx      = args.dx
+stdate  = args.start
 enddate = args.end
 dirname = args.dir
 sfc_dir = args.sfc
+l_het   = args.l_het
+z_r     = args.z_r
 
 # ---------------- #
 # HELPER FUNCITONS #
@@ -87,6 +95,48 @@ def read_sfc_data(var,nt,stdt,override='X'):
         varout_g[t,:,:] = np.reshape(var_v,(nx,nx))
         varout_v[t,:] = var_v[:]
     return varout_g,varout_v
+
+#### COMPUTE CIRCULATION FLUX ####
+# W     : width of connection (k,k)
+# zs    : height in frcs space (nz)
+# T     : temperature, (k,nz)
+# lam   : circulating species, (k,nz)
+# zr_i  : index in forcing space of switching period
+# H     : surface sensible heat flux (k)
+# k     : number of columns
+# T0    : reference temperature
+# l_het : lengthscale of heterogeneity
+# F[k1,k2,z] means flux from k1 to k2. (+) is net flux out of k1
+def circ_flux(W,T,lam,zr_i,H,zs,dsm=dsmooth,k=k,T0=T0,l=l_het):
+    nz_ = len(zs)
+    F = np.zeros((k,k,nz_))
+    for k1 in range(k):
+        for k2 in range(k):
+            if k1==k2:
+                continue
+            sgn = (H(k2)-H(k1))/np.abs(H(k2)-H(k1))
+            if sgn<0:
+                k_low=k2
+            else:
+                k_low=k1
+            F_sum = np.zeros((k1,k2))
+            for z in range(nz_):
+                dz_=
+                if z<zr_i-dsm:
+                    ur = np.abs(T(k1,z)-T(k2,z))/T0*9.81**(.5)*l_het**(.5)
+                    F(k1,k2,z)=W(k1,k2)*dz_*ur*lam[k_low,nz]
+                    F_sum[k1,k2] = F_sum[k1,k2]+F[k1,k2,z]
+                elif z<zr_i:
+                    ur = np.abs(T(k1,z)-T(k2,z))/T0*9.81**(.5)*l_het**(.5)
+                    F(k1,k2,z)=W(k1,k2)*dz_*ur*lam[k_low,nz]*(zr_i-z)/dsm
+                    F_sum[k1,k2] = F_sum[k1,k2]+F[k1,k2,z]
+                elif z==zr_i:
+                    continue
+                elif z<zr_i+dsm:
+                    
+                else:
+
+    #FIXME consider virtual potential temperature vs temperature!!
 
 #### FIND NEAREST VALUE IN AN ARRAY ####
 def find_nearest(array, value):
@@ -157,10 +207,17 @@ def write_forcings(data,frc_path):
     nt_ = len(data['time'])
     nz_ = len(data['Press[Pa]'][0,:])
     fp.write('! $Id$\n')
-    fp.write('! The vertical coordinate is entered in the first column as height (z[m]) or pressure (Press[Pa]).\n')
-    fp.write('! Temperature can be entered as liquid water potential temperature (thlm_f[K\s]), potential temperature (thm_f[K\s]), or absolute temperature(T_f[K\s]).\n')
-    fp.write('! Prescribed, time-independent vertical velocity can be entered as velocity (w[m\s]) or pressure velocity (omega[Pa\s] or omega[mb\hr])\n')
-    fp.write('Press[Pa]       T_f[K\s]        rtm_f[kg\kg\s]   um_ref[m\s]   vm_ref[m\s]      um_f[m\s^2]     vm_f[m\s^2]     omega[Pa\s]          ug[m\s]         vg[m\s]\n')
+    fp.write('! The vertical coordinate is entered in the first column as' +\
+             ' height (z[m]) or pressure (Press[Pa]).\n')
+    fp.write('! Temperature can be entered as liquid water potential '+\
+             'temperature (thlm_f[K\s]), potential temperature (thm_f[K\s])'+\
+             ', or absolute temperature(T_f[K\s]).\n')
+    fp.write('! Prescribed, time-independent vertical velocity can be '+\
+             'entered as velocity (w[m\s]) or pressure velocity '+\
+             '(omega[Pa\s] or omega[mb\hr])\n')
+    fp.write('Press[Pa]       T_f[K\s]        rtm_f[kg\kg\s]   '+\
+            'um_ref[m\s]   vm_ref[m\s]      um_f[m\s^2]     '+\
+            'vm_f[m\s^2]     omega[Pa\s]          ug[m\s]         vg[m\s]\n')
     for ti_ in range(nt_):
         tmp = '%.2f %d\n' % (data['time'][ti_],nz_)
         fp.write(tmp)
@@ -223,6 +280,10 @@ for line in fp:
         fln = 'time_final = '+str(tf0).ljust(11)+\
               '! Model end time [seconds since midnight UTC on start date]'
         lines.append(fln+'\n')
+    elif line[0:6]=='deltaz':
+        dzline = 'deltaz  = '+str(dz)+'   ! Distance between grid levels on'+\
+                 ' evenly-spaced grid.      [m]'
+        lines.append(dzline+'\n')
     else:
         lines.append(line)
 fp.close()
@@ -359,33 +420,63 @@ for j in list(range(1,k+1)):
 # --------------- #
 # OUTPUT CLUSTERS #
 # --------------- #
+print('OUTPUT CLUSTERS and COMPUTE CONNECTIONS')
 fp=nc.Dataset(w_dir+'/k_'+str(k)+'/clusters.nc','w')
 fp.createDimension('t',size=nt)
 fp.createDimension('lat',size=nx)
 fp.createDimension('lon',size=nx)
+fp.createDimension('clst',size=k)
+fp.createVariable('W','d',dimensions=('clst','clst'))
 fp.createVariable('cluster','d',dimensions=('t','lon','lat'))
 fp.createVariable('tskin','d',dimensions=('t','lon','lat'))
 fp.createVariable('H','d',dimensions=('t','lon','lat'))
 fp.createVariable('LE','d',dimensions=('t','lon','lat'))
+fp.createVariable('frac','d',dimensions=('clst'))
+fp.createVariable('H_clst','d',dimensions=('t','clst'))
+
+clst_2d = np.reshape(k_masks[:,:],(nt,nx,nx))
 fp['tskin'][:]=Tsfcg[:]
-fp['cluster'][:]=np.reshape(k_masks[:,:],(nt,nx,nx))
+fp['cluster'][:]=clst_2d[:]
 fp['H'][:]=Hg[:]
 fp['LE'][:]=Lg[:]
-fp.close()
 
+# compute fraction that each cluster occupies
 clst_frac = np.zeros((k,))
 for i in range(k):
     clst_frac[i]=np.sum(k_masks[:]==i)/k_masks.size
+fp['frac'][:]=np.array(clst_frac)[:]
 
-tlist = list(range(int(t_init),int(t_final),int(round(delta_t*n_rest))))
-wtzi = np.ones((len(tlist),nz_forcing,k))
-
+# compute the width of the connecting surface 
+W = np.zeros((k,k))
+for i in range(nx):
+    for j in range(nx):
+        cl = clst_2d[0,i,j]
+        if i>0:
+            cl_2 = clst_2d[0,i-1,j]
+            W[cl,cl_2]=W[cl,cl_2]+dx
+        if i<(nx-1):
+            cl_2 = clst_2d[0,i+1,j]
+            W[cl,cl_2]=W[cl,cl_2]+dx
+        if j>0:
+            cl_2 = clst_2d[0,i,j-1]
+            W[cl,cl_2]=W[cl,cl_2]+dx
+        if j<(nx-1):
+            cl_2 = clst_2d[0,i,j+1]
+            W[cl,cl_2]=W[cl,cl_2]+dx
+fp['W'][:] = W[:]
+# compute the sensible heat flux of each cluster
+H_clst = np.zeros((nt,k))
+for i in range(k):
+    H_clst[:,i]=np.mean(k_masks[:]==i,axis=1)
+fp['H_clst'][:]=H_clst[:]
 
 #sys.exit()
 
 # --------- #
 # CORE LOOP #
 # --------- #
+tlist = list(range(int(t_init),int(t_final),int(round(delta_t*n_rest))))
+wtzi = np.ones((len(tlist),nz_forcing,k))
 
 # FIRST TIMESTEP 
 for j in list(range(1,k+1)):
@@ -398,12 +489,15 @@ for j in list(range(1,k+1)):
     os.mkdir(w_dir+'/k_'+str(k)+'/c_'+str(j)+'/restart')
     os.mkdir(w_dir+'/k_'+str(k)+'/c_'+str(j)+'/output/old')
 
-
 frcs = read_forcings(m_dir+'/c_'+str(1)+'/input/case_setups/arm_forcings.in',nz_forcing)
 p_in = frcs['Press[Pa]'][0,:]
 t_in = frcs['time'][:]
-
+frcs = {}
+for i in range(1,k+1):
+    frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
+    frcs[i] = read_forcings(frc_file,nz_forcing)
 for i in range(1,len(tlist)):
+    
     # Time Naming Conventions t[NUM]i_[X] means index of t[NUM] in file [X]
     # [X] == f means forcing file, [X] == o means output file
     t3 = tlist[i] # end of previous run, start of this run
@@ -416,19 +510,17 @@ for i in range(1,len(tlist)):
     t4 = t3+n_rest*delta_t/2 # middle of this run
     t5 = t3+n_rest*delta_t # end of this run
     t6 = t_in[t0i_f+1] # upper bound of forcing file which contains t3
-    
-    t2i_o = int(round(n_rest/2))
 
     tmps = np.zeros((k,nz_forcing))
     rtms = np.zeros((k,nz_forcing))
     ums  = np.zeros((k,nz_forcing))
     vms  = np.zeros((k,nz_forcing))
-    
+
     tmp_m =np.zeros((nz_forcing,))
     rtm_m =np.zeros((nz_forcing,))
 
     t3i_o = int(round(n_rest-1))
-    
+
     # Load in the temperature and mixing ratio
     for j in range(1,k+1):
         fp = nc.Dataset(m_dir+'/c_'+str(j)+'/output/arm_zt.nc','r')
@@ -438,39 +530,15 @@ for i in range(1,len(tlist)):
             zli = find_nearest(p_out,p_in[l])
             tmps[j-1,l]=fp['T_in_K'][t3i_o,zli,0,0]
             rtms[j-1,l]=fp['rtm'][t3i_o,zli,0,0]
-        tmp_m[:]=tmp_m[:]+clst_frac[j-1]*tmps[j-1,:]
-        rtm_m[:]=rtm_m[:]+clst_frac[j-1]*rtms[j-1,:]
-        fp.close()
     
-    # determine weights
-    wts_t = np.ones((k,nz_forcing))
-    wts_r = np.ones((k,nz_forcing))
-    for l in range(nz_forcing):
-        wts_t[:,l]=1+(tmps[:,l]-tmp_m[l])/dT_ref
-        #wts_t[:,l]=wts_t[:,l]/np.sum(wts_t[:,l])
-        wts_r[:,l]=1+(rtms[:,l]-rtm_m[l])/dr_ref
-        #wts_r[:,l]=wts_r[:,l]/np.sum(wts_r[:,l])
-
+    # compute and define fluxes
     for j in list(range(1,k+1)):
         frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
-        frcs = read_forcings(frc_file,nz_forcing)
+        # THIS IS WHERE YOU DO THE EQUATIONS FIXME  
 
         # find forcing value at center of the next run
-        Et_0 = frcs['T_f[K\s]'][t0i_f,:]
-        Et_6 = frcs['T_f[K\s]'][t0i_f+1,:]
-        et_6 = Et_6*wts_t[j-1,:]
-        et_0 = Et_0*wts_t[j-1,:]
-
-        Er_0 = frcs['rtm_f[kg\kg\s]'][t0i_f,:]
-        Er_6 = frcs['rtm_f[kg\kg\s]'][t0i_f+1,:]
-        er_6 = Er_6*wts_r[j-1,:]
-        er_0 = Er_0*wts_r[j-1,:]
-
-        # write to the forcing file
-        frcs['T_f[K\s]'][t0i_f,:]=et_0[:]
-        frcs['T_f[K\s]'][t0i_f+1,:]=et_6[:]
-        frcs['rtm_f[kg\kg\s]'][t0i_f,:] = er_0[:]
-        frcs['rtm_f[kg\kg\s]'][t0i_f+1,:] = er_6[:]
+        #Et_0 = frcs['T_f[K\s]'][t0i_f,:]
+        #frcs['T_f[K\s]'][t0i_f,:]=et_0[:]
         write_forcings(frcs,frc_file)
 
         # copy output files to new location
