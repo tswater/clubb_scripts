@@ -18,10 +18,9 @@ import shutil
 
 #### CONSTANTS ####
 # run options
-agg_zm_var = []
 n_rest     = 5
 delta_t    = 60 # in seconds, for CLUBB
-dsmooth    = 4 # number of p levels over which to switch sign of circ flux
+dsmooth    = 5 # number of levels over which to switch sign of circ flux
 T0         = 300 # reference temperature; matched to CLUBB
 
 # directories
@@ -36,7 +35,7 @@ nx      = 1000 # number of gridcells in each direction
 dx      = 100  # resolution of surface grid in meters
 dz      = 40 # dz
 zmax    = 10000
-nz      = 251
+nz      = int(np.floor(zmax/dz)+1)
 stdate  = '2017-07-16T12:00:00.000'# start date iso format
 enddate = '2017-07-17T03:00:00.000'# end date iso format
 dirname = 'test_cpl3'
@@ -107,9 +106,13 @@ def read_sfc_data(var,nt,stdt,override='X'):
 # T0    : reference temperature
 # l_het : lengthscale of heterogeneity
 # F[k1,k2,z] means flux from k1 to k2. (+) is net flux out of k1
-def circ_flux(W,T,lam,zr_i,H,zs,dsm=dsmooth,k=k,T0=T0,l=l_het):
-    nz_ = len(zs)
+def circ_flux(W,T,lam,zr_i,H,nz_=nz,dsm=dsmooth,k=k,T0=T0,l=l_het):
     F = np.zeros((k,k,nz_))
+    denom = nz_-(zr_i+dsm)
+    for i in range(1,dsm):
+        denom = denom + i/dsm
+    F_sum = np.zeros((k1,k2))
+    F_sumout = np.zeros((k1,k2))
     for k1 in range(k):
         for k2 in range(k):
             if k1==k2:
@@ -119,23 +122,27 @@ def circ_flux(W,T,lam,zr_i,H,zs,dsm=dsmooth,k=k,T0=T0,l=l_het):
                 k_low=k2
             else:
                 k_low=k1
-            F_sum = np.zeros((k1,k2))
             for z in range(nz_):
                 dz_=
                 if z<zr_i-dsm:
                     ur = np.abs(T(k1,z)-T(k2,z))/T0*9.81**(.5)*l_het**(.5)
-                    F(k1,k2,z)=W(k1,k2)*dz_*ur*lam[k_low,nz]
+                    F(k1,k2,z)=W(k1,k2)*dz_*ur*lam[k_low,z]
                     F_sum[k1,k2] = F_sum[k1,k2]+F[k1,k2,z]
                 elif z<zr_i:
                     ur = np.abs(T(k1,z)-T(k2,z))/T0*9.81**(.5)*l_het**(.5)
-                    F(k1,k2,z)=W(k1,k2)*dz_*ur*lam[k_low,nz]*(zr_i-z)/dsm
+                    F(k1,k2,z)=W(k1,k2)*dz_*ur*lam[k_low,z]*(zr_i-z)/dsm
                     F_sum[k1,k2] = F_sum[k1,k2]+F[k1,k2,z]
                 elif z==zr_i:
                     continue
                 elif z<zr_i+dsm:
-                    
+                    F(k1,k2,z)=-1/denom*F_sum[k1,k2]*(zr_i-z)/dsm
+                    F_sumout(k1,k2) = F_sumout+F(k1,k2,z)
                 else:
-
+                    F(k1,k2,z)=-1/denom*F_sum[k1,k2]
+                    F_sumout(k1,k2) = F_sumout+F(k1,k2,z)
+    print(F_sum-F_sumout)
+    return F
+                    
     #FIXME consider virtual potential temperature vs temperature!!
 
 #### FIND NEAREST VALUE IN AN ARRAY ####
@@ -284,6 +291,10 @@ for line in fp:
         dzline = 'deltaz  = '+str(dz)+'   ! Distance between grid levels on'+\
                  ' evenly-spaced grid.      [m]'
         lines.append(dzline+'\n')
+    elif line[0:6]=='zm_top':
+        zmline = 'zm_top = '+str(nz)+' ! Maximum Altitude of '+\
+                 'highest momentum level on any grid. [m]'
+        lines.append(zmline+'\n')
     else:
         lines.append(line)
 fp.close()
@@ -341,7 +352,7 @@ for i in list(range(k)):
 
 
 # extend arm_forcing.in
-nz_forcing = 37 #number of levels in forcing #FIXME 
+nz_forcing = 37 #number of levels in original forcing file
 for j in list(range(1,k+1)):
     frc_path = w_dir+'/k_'+str(k)+'/c_'+str(j)+\
                    '/input/case_setups/arm_forcings.in'
@@ -467,7 +478,7 @@ fp['W'][:] = W[:]
 # compute the sensible heat flux of each cluster
 H_clst = np.zeros((nt,k))
 for i in range(k):
-    H_clst[:,i]=np.mean(k_masks[:]==i,axis=1)
+    H_clst[:,i]=np.mean(fp_clst['H'][:,:,:][fp['cluster'][:]==(i+1)],axis=(1,2))
 fp['H_clst'][:]=H_clst[:]
 
 #sys.exit()
@@ -476,7 +487,12 @@ fp['H_clst'][:]=H_clst[:]
 # CORE LOOP #
 # --------- #
 tlist = list(range(int(t_init),int(t_final),int(round(delta_t*n_rest))))
-wtzi = np.ones((len(tlist),nz_forcing,k))
+H2 = np.zeros(len(tlist),k)
+tss = []
+for t in range(nt):
+    tss.append(t_init+t*dt)
+for i in range(k):
+    H2[:,i]=np.interp(tlist,tss,H_clst[:,i])
 
 # FIRST TIMESTEP 
 for j in list(range(1,k+1)):
@@ -493,49 +509,51 @@ frcs = read_forcings(m_dir+'/c_'+str(1)+'/input/case_setups/arm_forcings.in',nz_
 p_in = frcs['Press[Pa]'][0,:]
 t_in = frcs['time'][:]
 frcs = {}
+
+# EXTEND FORCING TO COVER FULL VERTICAL DOMAIN
+for i in range(1,k+1):
+    frcs_i = read_forcings(m_dir+'/c_'+str(i)+'/input/case_setups/arm_forcings.in',nz_forcing)
+    zs = np.linspace(0,zmax,nz)
+    pres_frc = frcs_i['Press[Pa]'][:]
+    fp_output = nc.Dataset(m_dir+'/c_'+str(i)+'/output/arm_zt.in','r')
+    pres_newfrc = fp_output['p_in_Pa'][0,:,0,0]
+    data2 = {}
+    for var in frcs_i.keys():
+        if var == 'time':
+            data2[var]=np.zeros((len(tlist)))
+            data2[var][:]=frcs_i[var][:]
+            continue
+        data2[var]=np.zeros((len(tlist),nz))
+        if var == 'Press[Pa]':
+            data2[var][t,:]=pres_newfrc[:]
+            continue
+        for t in range(tlist):
+            data2[var][t,:]=np.linterp(pres_newfrc,pres_frc,frcs_i[var][t,:])
+    write_forcings(data2,m_dir+'/c_'+str(i)+'/input/case_setups/arm_forcings.in')
+
 for i in range(1,k+1):
     frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
-    frcs[i] = read_forcings(frc_file,nz_forcing)
-for i in range(1,len(tlist)):
-    
-    # Time Naming Conventions t[NUM]i_[X] means index of t[NUM] in file [X]
-    # [X] == f means forcing file, [X] == o means output file
-    t3 = tlist[i] # end of previous run, start of this run
-    t4 = t3+n_rest*delta_t/2 # middle of this run
-    t0i_f = find_previous(t_in,t4)
-    t0 = t_in[t0i_f] # lower bound of forcing file which contains t3 
-    t1 = tlist[i-1] # start of the previous run
-    t2 = t1+n_rest*delta_t/2 # middle of previous run
-    t3 = tlist[i] # end of previous run, start of this run
-    t4 = t3+n_rest*delta_t/2 # middle of this run
-    t5 = t3+n_rest*delta_t # end of this run
-    t6 = t_in[t0i_f+1] # upper bound of forcing file which contains t3
-
-    tmps = np.zeros((k,nz_forcing))
-    rtms = np.zeros((k,nz_forcing))
-    ums  = np.zeros((k,nz_forcing))
-    vms  = np.zeros((k,nz_forcing))
-
-    tmp_m =np.zeros((nz_forcing,))
-    rtm_m =np.zeros((nz_forcing,))
-
-    t3i_o = int(round(n_rest-1))
+    frcs[i] = read_forcings(frc_file,nz)
+for i in range(1,len(tlist)): 
+    t0 = tlist[i]
+    t1 = t0+n_rest*delta_t
+    tmps = np.zeros((k,nz))
+    rtms = np.zeros((k,nz))
 
     # Load in the temperature and mixing ratio
     for j in range(1,k+1):
         fp = nc.Dataset(m_dir+'/c_'+str(j)+'/output/arm_zt.nc','r')
-        p_out = fp['p_in_Pa'][t3i_o,:,0,0]
-
-        for l in range(nz_forcing):
-            zli = find_nearest(p_out,p_in[l])
-            tmps[j-1,l]=fp['T_in_K'][t3i_o,zli,0,0]
-            rtms[j-1,l]=fp['rtm'][t3i_o,zli,0,0]
+        tmps[:,:]=fp['T_in_K'][int(round(n_rest-1)),:,0,0]
+        rtms[:,:]=fp['rtm'][int(round(n_rest-1)),:,0,0]
     
     # compute and define fluxes
     for j in list(range(1,k+1)):
         frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
         # THIS IS WHERE YOU DO THE EQUATIONS FIXME  
-
+        
+        zri = int(np.floor((zmax-z_r)/dz)+1)
+        F = circ_flux(W,tmps,tmps,zri,H2)
+        
         # find forcing value at center of the next run
         #Et_0 = frcs['T_f[K\s]'][t0i_f,:]
         #frcs['T_f[K\s]'][t0i_f,:]=et_0[:]
@@ -561,9 +579,9 @@ for i in range(1,len(tlist)):
             elif 'restart_path_case' in line:
                 lines.append('restart_path_case = "restart/arm"\n')
             elif 'time_restart' in line:
-                lines.append('time_restart = '+str(t3)+' \n')
+                lines.append('time_restart = '+str(t0)+' \n')
             elif line[0:10]=='time_final':
-                fln = 'time_final = '+str(t6).ljust(11)+\
+                fln = 'time_final = '+str(t1).ljust(11)+\
                       '! Model end time [seconds since midnight UTC on start date]'
                 lines.append(fln+'\n')
             else:
@@ -576,9 +594,9 @@ for i in range(1,len(tlist)):
     
         # run restart
         rfile = w_dir+'/k_'+str(k)+'/c_'+str(j)+'/run_scripts/run_scm.bash'
-        print('STARTING RUN: '+str(j)+' at time '+str(t3)+' with process '+str(0),flush=True)
+        print('STARTING RUN: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
         subprocess.run('./'+rfile+' arm',shell=True,stdout=subprocess.DEVNULL)
-        print('RUN COMPLETE: '+str(j)+' at time '+str(t3)+' with process '+str(0),flush=True)
+        print('RUN COMPLETE: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
 
 # ---------- #
 # AGG OUTPUT #
