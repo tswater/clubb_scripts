@@ -38,7 +38,7 @@ zmax    = 10000
 nz      = int(np.floor(zmax/dz)+1)
 stdate  = '2017-07-16T12:00:00.000'# start date iso format
 enddate = '2017-07-17T03:00:00.000'# end date iso format
-dirname = 'test_cpl3'
+dirname = 'test_cpl4'
 l_het   =  10000 # Lengthscale of heterogeneity in meters
 # FIXME as nate for a better first guess of l_het after we give him baby space
 z_r     = 5000 # height where we switch sign of circulation flux
@@ -106,41 +106,40 @@ def read_sfc_data(var,nt,stdt,override='X'):
 # T0    : reference temperature
 # l_het : lengthscale of heterogeneity
 # F[k1,k2,z] means flux from k1 to k2. (+) is net flux out of k1
-def circ_flux(W,T,lam,zr_i,H,nz_=nz,dsm=dsmooth,k=k,T0=T0,l=l_het):
+def circ_flux(W,T,lam,zr_i,H,V,dz_=dz,nz_=nz,dsm=dsmooth,k=k,T0=T0,l=l_het):
     F = np.zeros((k,k,nz_))
     denom = nz_-(zr_i+dsm)
-    for i in range(1,dsm):
-        denom = denom + i/dsm
-    F_sum = np.zeros((k1,k2))
-    F_sumout = np.zeros((k1,k2))
+    F_sum = np.zeros((k,k))
+    F_sumout = np.zeros((k,k))
     for k1 in range(k):
         for k2 in range(k):
             if k1==k2:
                 continue
-            sgn = (H(k2)-H(k1))/np.abs(H(k2)-H(k1))
+            sgn = (H[k2]-H[k1])/np.abs(H[k2]-H[k1])
             if sgn<0:
                 k_low=k2
+                k_hi =k1
             else:
                 k_low=k1
+                k_hi =k2
+            test=0
             for z in range(nz_):
-                dz_=
-                if z<zr_i-dsm:
-                    ur = np.abs(T(k1,z)-T(k2,z))/T0*9.81**(.5)*l_het**(.5)
-                    F(k1,k2,z)=W(k1,k2)*dz_*ur*lam[k_low,z]
+                if z<=(zr_i-dsm):
+                    ur = np.abs(T[k1,z]-T[k2,z])/T0*9.81**(.5)*l**(.5)
+                    F[k1,k2,z]=W[k1,k2]*dz_*ur*lam[k_low,z]/V[k_hi]*sgn
                     F_sum[k1,k2] = F_sum[k1,k2]+F[k1,k2,z]
                 elif z<zr_i:
-                    ur = np.abs(T(k1,z)-T(k2,z))/T0*9.81**(.5)*l_het**(.5)
-                    F(k1,k2,z)=W(k1,k2)*dz_*ur*lam[k_low,z]*(zr_i-z)/dsm
-                    F_sum[k1,k2] = F_sum[k1,k2]+F[k1,k2,z]
+                    ur = np.abs(T[k1,z]-T[k2,z])/T0*9.81**(.5)*l**(.5)
+                    F[k1,k2,z]=W[k1,k2]*dz_*ur*lam[k_low,z]*(zr_i-z)/dsm/V[k_hi]*sgn
                 elif z==zr_i:
                     continue
-                elif z<zr_i+dsm:
-                    F(k1,k2,z)=-1/denom*F_sum[k1,k2]*(zr_i-z)/dsm
-                    F_sumout(k1,k2) = F_sumout+F(k1,k2,z)
+                elif z<(zr_i+dsm):
+                    F[k1,k2,z]=-F[k1,k2,zr_i-(z-zr_i)]
                 else:
-                    F(k1,k2,z)=-1/denom*F_sum[k1,k2]
-                    F_sumout(k1,k2) = F_sumout+F(k1,k2,z)
-    print(F_sum-F_sumout)
+                    test=test+1
+                    F[k1,k2,z]=-1/denom*F_sum[k1,k2]
+                    F_sumout[k1,k2] = F_sumout[k1,k2]+F[k1,k2,z]
+            print(str(denom)+' '+str(test))
     return F
                     
     #FIXME consider virtual potential temperature vs temperature!!
@@ -174,7 +173,6 @@ def read_forcings(path,nz_=37):
         lsp = line.split(' ')
         if (lsp[1]==str(nz_) or (lsp[1]==(str(nz_)+'\n'))):
             t = t+1
-    print(t)
     data={}
     headbool=True
     ti = -1
@@ -192,7 +190,7 @@ def read_forcings(path,nz_=37):
                 if '\n' in x:
                     x = x[0:-1]
                 head.append(x)
-                data[x]=np.zeros((t,37))
+                data[x]=np.zeros((t,nz_))
             data['time']=[]
             continue
         lsp = line.split(' ')
@@ -292,7 +290,7 @@ for line in fp:
                  ' evenly-spaced grid.      [m]'
         lines.append(dzline+'\n')
     elif line[0:6]=='zm_top':
-        zmline = 'zm_top = '+str(nz)+' ! Maximum Altitude of '+\
+        zmline = 'zm_top = '+str(zmax)+' ! Maximum Altitude of '+\
                  'highest momentum level on any grid. [m]'
         lines.append(zmline+'\n')
     else:
@@ -461,25 +459,31 @@ fp['frac'][:]=np.array(clst_frac)[:]
 W = np.zeros((k,k))
 for i in range(nx):
     for j in range(nx):
-        cl = clst_2d[0,i,j]
+        cl = int(clst_2d[0,i,j])
         if i>0:
-            cl_2 = clst_2d[0,i-1,j]
+            cl_2 = int(clst_2d[0,i-1,j])
             W[cl,cl_2]=W[cl,cl_2]+dx
         if i<(nx-1):
-            cl_2 = clst_2d[0,i+1,j]
+            cl_2 = int(clst_2d[0,i+1,j])
             W[cl,cl_2]=W[cl,cl_2]+dx
         if j>0:
-            cl_2 = clst_2d[0,i,j-1]
+            cl_2 = int(clst_2d[0,i,j-1])
             W[cl,cl_2]=W[cl,cl_2]+dx
         if j<(nx-1):
-            cl_2 = clst_2d[0,i,j+1]
+            cl_2 = int(clst_2d[0,i,j+1])
             W[cl,cl_2]=W[cl,cl_2]+dx
 fp['W'][:] = W[:]
 # compute the sensible heat flux of each cluster
 H_clst = np.zeros((nt,k))
 for i in range(k):
-    H_clst[:,i]=np.mean(fp_clst['H'][:,:,:][fp['cluster'][:]==(i+1)],axis=(1,2))
+    for t in range(nt):
+        H_clst[t,i]=np.mean(fp['H'][t,:,:][fp['cluster'][t,:,:]==i])
 fp['H_clst'][:]=H_clst[:]
+
+print(np.mean(H_clst,axis=0))
+
+# compute the volume of each cluster
+V = clst_frac*dz*k_masks.size*dx*dx
 
 #sys.exit()
 
@@ -487,7 +491,7 @@ fp['H_clst'][:]=H_clst[:]
 # CORE LOOP #
 # --------- #
 tlist = list(range(int(t_init),int(t_final),int(round(delta_t*n_rest))))
-H2 = np.zeros(len(tlist),k)
+H2 = np.zeros((len(tlist),k))
 tss = []
 for t in range(nt):
     tss.append(t_init+t*dt)
@@ -499,7 +503,7 @@ for j in list(range(1,k+1)):
     # run the script
     rfile = w_dir+'/k_'+str(k)+'/c_'+str(j)+'/run_scripts/run_scm.bash'
     print(rfile)
-    subprocess.run('./'+rfile+' arm >'+'log'+str(j),shell=True,stdin=subprocess.DEVNULL)
+    subprocess.run(rfile+' arm >'+'log'+str(j),shell=True,stdin=subprocess.DEVNULL)
     print()
     print(str(j) + ' IS COMPLETE ',flush=True)
     os.mkdir(w_dir+'/k_'+str(k)+'/c_'+str(j)+'/restart')
@@ -515,24 +519,27 @@ for i in range(1,k+1):
     frcs_i = read_forcings(m_dir+'/c_'+str(i)+'/input/case_setups/arm_forcings.in',nz_forcing)
     zs = np.linspace(0,zmax,nz)
     pres_frc = frcs_i['Press[Pa]'][:]
-    fp_output = nc.Dataset(m_dir+'/c_'+str(i)+'/output/arm_zt.in','r')
+    fp_output = nc.Dataset(m_dir+'/c_'+str(i)+'/output/arm_zt.nc','r')
     pres_newfrc = fp_output['p_in_Pa'][0,:,0,0]
+    fp_output.close()
     data2 = {}
     for var in frcs_i.keys():
         if var == 'time':
-            data2[var]=np.zeros((len(tlist)))
+            data2[var]=np.zeros((len(tlist)+1))
             data2[var][:]=frcs_i[var][:]
             continue
-        data2[var]=np.zeros((len(tlist),nz))
+        data2[var]=np.zeros((len(tlist)+1,nz))
         if var == 'Press[Pa]':
             data2[var][t,:]=pres_newfrc[:]
             continue
-        for t in range(tlist):
-            data2[var][t,:]=np.linterp(pres_newfrc,pres_frc,frcs_i[var][t,:])
+        for t in range(len(tlist)):
+            data2[var][t,:]=np.interp(pres_newfrc,pres_frc[2,:][::-1],frcs_i[var][t,:][::-1])
     write_forcings(data2,m_dir+'/c_'+str(i)+'/input/case_setups/arm_forcings.in')
 
+#sys.exit()
+
 for i in range(1,k+1):
-    frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
+    frc_file = m_dir+'/c_'+str(i)+'/input/case_setups/arm_forcings.in'
     frcs[i] = read_forcings(frc_file,nz)
 for i in range(1,len(tlist)): 
     t0 = tlist[i]
@@ -543,21 +550,28 @@ for i in range(1,len(tlist)):
     # Load in the temperature and mixing ratio
     for j in range(1,k+1):
         fp = nc.Dataset(m_dir+'/c_'+str(j)+'/output/arm_zt.nc','r')
-        tmps[:,:]=fp['T_in_K'][int(round(n_rest-1)),:,0,0]
-        rtms[:,:]=fp['rtm'][int(round(n_rest-1)),:,0,0]
+        tmps[j-1,:]=fp['T_in_K'][int(round(n_rest-1)),:,0,0]
+        rtms[j-1,:]=fp['rtm'][int(round(n_rest-1)),:,0,0]
+        fp.close()
     
     # compute and define fluxes
+    zri = int(np.floor((zmax-z_r)/dz)+1)
+    F_T = circ_flux(W,tmps,tmps,zri,H2[i,:],V)
+    F_r = circ_flux(W,tmps,rtms,zri,H2[i,:],V)
+
     for j in list(range(1,k+1)):
         frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
-        # THIS IS WHERE YOU DO THE EQUATIONS FIXME  
         
-        zri = int(np.floor((zmax-z_r)/dz)+1)
-        F = circ_flux(W,tmps,tmps,zri,H2)
-        
+        # Change Flux to forcings
+        frcs[j]['T_f[K\s]'][i,:]=frcs[j]['T_f[K\s]'][i,:]-\
+                                   np.sum(F_T[j-1,:,:],axis=0)
+        frcs[j]['rtm_f[kg\kg\s]'][i,:]=frcs[j]['rtm_f[kg\kg\s]'][i,:]-\
+                                         np.sum(F_r[j-1,:,:],axis=0)
+
         # find forcing value at center of the next run
         #Et_0 = frcs['T_f[K\s]'][t0i_f,:]
         #frcs['T_f[K\s]'][t0i_f,:]=et_0[:]
-        write_forcings(frcs,frc_file)
+        write_forcings(frcs[j],frc_file)
 
         # copy output files to new location
         c_dir = m_dir+'/c_'+str(j)+'/'
@@ -595,7 +609,7 @@ for i in range(1,len(tlist)):
         # run restart
         rfile = w_dir+'/k_'+str(k)+'/c_'+str(j)+'/run_scripts/run_scm.bash'
         print('STARTING RUN: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
-        subprocess.run('./'+rfile+' arm',shell=True,stdout=subprocess.DEVNULL)
+        subprocess.run(rfile+' arm',shell=True,stdout=subprocess.DEVNULL)
         print('RUN COMPLETE: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
 
 # ---------- #
