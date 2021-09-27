@@ -6,7 +6,7 @@ import argparse
 # ----------- #
 # USER INPUTS #
 # ----------- #
-main_dir = '/home/tsw35/tyche/clubb/sgp_2017716/'
+main_dir = '/home/tsw35/tyche/clubb/test_cpl5/'
 nx = 1000
 force_agg = True
 dt = 60 #FIXME should get from arm_model.in
@@ -60,7 +60,6 @@ for kfile in os.listdir(main_dir):
                     num = int(sp2[0])
                     if num > n_rst:
                         n_rst = num
-ks = [1,2]
 # get initial and final time
 fp = open(main_dir+'k_'+str(ks[0])+'/c_1/input/arm_model.in','r')
 for line in fp.readlines():

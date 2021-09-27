@@ -18,10 +18,12 @@ import shutil
 
 #### CONSTANTS ####
 # run options
-n_rest     = 5
+n_rest     = 5 # number of timesteps between restart
 delta_t    = 60 # in seconds, for CLUBB
 dsmooth    = 5 # number of levels over which to switch sign of circ flux
 T0         = 300 # reference temperature; matched to CLUBB
+c_r        = .02 # factor for moisture fluxes
+c_t        = .001 # factor for temperature fluxes
 
 # directories
 sfc_dir   = '/stor/soteria/hydro/shared/sgp_surfaces/dx0100nx1000/'
@@ -38,7 +40,7 @@ zmax    = 10000
 nz      = int(np.floor(zmax/dz)+1)
 stdate  = '2017-07-16T12:00:00.000'# start date iso format
 enddate = '2017-07-17T03:00:00.000'# end date iso format
-dirname = 'test_cpl4'
+dirname = 'test_cpl5'
 l_het   =  10000 # Lengthscale of heterogeneity in meters
 # FIXME as nate for a better first guess of l_het after we give him baby space
 z_r     = 5000 # height where we switch sign of circulation flux
@@ -54,8 +56,11 @@ prs.add_argument('-i', action='store', dest='dir', default=dirname)
 prs.add_argument('-s', action='store', dest='start', default=stdate)
 prs.add_argument('-e', action='store', dest='end',default=enddate)
 prs.add_argument('-c', action='store', dest='sfc',default=sfc_dir)
-prs.add_argument('-l', action='store', dest='l_het',default=l_het)
-prs.add_argument('-z', action='store', dest='z_r',default=z_r)
+prs.add_argument('-l', action='store', dest='l_het',type=int,default=l_het)
+prs.add_argument('-z', action='store', dest='z_r',type=int,default=z_r)
+prs.add_argument('-r', action='store', dest='c_r',type=float,default=c_r)
+prs.add_argument('-t', action='store', dest='c_t',type=float,default=c_t)
+
 
 args = prs.parse_args()
 
@@ -69,6 +74,9 @@ dirname = args.dir
 sfc_dir = args.sfc
 l_het   = args.l_het
 z_r     = args.z_r
+c_r     = args.c_r
+c_t     = args.c_t
+
 
 # ---------------- #
 # HELPER FUNCITONS #
@@ -106,7 +114,7 @@ def read_sfc_data(var,nt,stdt,override='X'):
 # T0    : reference temperature
 # l_het : lengthscale of heterogeneity
 # F[k1,k2,z] means flux from k1 to k2. (+) is net flux out of k1
-def circ_flux(W,T,lam,zr_i,H,V,dz_=dz,nz_=nz,dsm=dsmooth,k=k,T0=T0,l=l_het):
+def circ_flux(W,T,lam,c_,zr_i,H,V,zr_i2=0,dz_=dz,nz_=nz,dsm=dsmooth,k=k,T0=T0,l=l_het):
     F = np.zeros((k,k,nz_))
     denom = nz_-(zr_i+dsm)
     F_sum = np.zeros((k,k))
@@ -115,7 +123,12 @@ def circ_flux(W,T,lam,zr_i,H,V,dz_=dz,nz_=nz,dsm=dsmooth,k=k,T0=T0,l=l_het):
         for k2 in range(k):
             if k1==k2:
                 continue
-            sgn = (H[k2]-H[k1])/np.abs(H[k2]-H[k1])
+
+            # homogeneous 2 sector case
+            if zr_i2>0:
+                pass
+            # level by level case
+            sgn = -(H[k2]-H[k1])/np.abs(H[k2]-H[k1])
             if sgn<0:
                 k_low=k2
                 k_hi =k1
@@ -126,11 +139,11 @@ def circ_flux(W,T,lam,zr_i,H,V,dz_=dz,nz_=nz,dsm=dsmooth,k=k,T0=T0,l=l_het):
             for z in range(nz_):
                 if z<=(zr_i-dsm):
                     ur = np.abs(T[k1,z]-T[k2,z])/T0*9.81**(.5)*l**(.5)
-                    F[k1,k2,z]=W[k1,k2]*dz_*ur*lam[k_low,z]/V[k_hi]*sgn
+                    F[k1,k2,z]=c_*W[k1,k2]*dz_*ur*lam[k_low,z]/V[k_hi]*sgn
                     F_sum[k1,k2] = F_sum[k1,k2]+F[k1,k2,z]
                 elif z<zr_i:
                     ur = np.abs(T[k1,z]-T[k2,z])/T0*9.81**(.5)*l**(.5)
-                    F[k1,k2,z]=W[k1,k2]*dz_*ur*lam[k_low,z]*(zr_i-z)/dsm/V[k_hi]*sgn
+                    F[k1,k2,z]=c_*W[k1,k2]*dz_*ur*lam[k_low,z]*(zr_i-z)/dsm/V[k_hi]*sgn
                 elif z==zr_i:
                     continue
                 elif z<(zr_i+dsm):
@@ -473,6 +486,7 @@ for i in range(nx):
             cl_2 = int(clst_2d[0,i,j+1])
             W[cl,cl_2]=W[cl,cl_2]+dx
 fp['W'][:] = W[:]
+
 # compute the sensible heat flux of each cluster
 H_clst = np.zeros((nt,k))
 for i in range(k):
@@ -496,7 +510,9 @@ tss = []
 for t in range(nt):
     tss.append(t_init+t*dt)
 for i in range(k):
-    H2[:,i]=np.interp(tlist,tss,H_clst[:,i])
+    H2[:,i]=np.mean(H_clst[:,i])
+    # uncomment below for variable hot and warm patches
+    #H2[:,i]=np.interp(tlist,tss,H_clst[:,i])
 
 # FIRST TIMESTEP 
 for j in list(range(1,k+1)):
@@ -514,6 +530,27 @@ p_in = frcs['Press[Pa]'][0,:]
 t_in = frcs['time'][:]
 frcs = {}
 
+# OUTPUT RUN INFORMATION 
+fp = open(w_dir+'/tw_run_param.txt','w')
+fp.write('n_rest  = '+str(n_rest)+' # timesteps to next restart\n')
+fp.write('delta_t = '+str(delta_t)+' # clubb timestep in seconds\n')
+fp.write('dsmooth = '+str(dsmooth)+' # number of vertical levels to smooth forcing at switch\n')
+fp.write('T0      = '+str(T0)+' # clubb reference temperature\n')
+fp.write('c_t     = '+str(c_t)+' # flux factor for temperature\n')
+fp.write('c_r     = '+str(c_r)+' # flux factor for moisture\n')
+fp.write('l_het   = '+str(l_het)+' # lengthscale of heterogeneity\n')
+fp.write('sfc_dir = '+sfc_dir+' # sfc directory\n')
+fp.write('k       = '+str(k)+' # number of columns\n')
+fp.write('nx      = '+str(nx)+' # number of gridcells in each direction\n')
+fp.write('dx      = '+str(dx)+' # surface grid resolution\n')
+fp.write('dz      = '+str(dz)+' # vertical grid resolution\n')
+fp.write('zmax    = '+str(zmax)+' # maximum height in clubb\n')
+fp.write('z_r     = '+str(z_r)+' # height where we switch sign of circ flux\n')
+fp.write('stdate  = '+str(stdate)+' # start date\n')
+fp.write('enddate = '+str(enddate)+' # end date\n')
+fp.write('\nRan at: '+str(datetime.datetime.today()))
+fp.close()
+
 # EXTEND FORCING TO COVER FULL VERTICAL DOMAIN
 for i in range(1,k+1):
     frcs_i = read_forcings(m_dir+'/c_'+str(i)+'/input/case_setups/arm_forcings.in',nz_forcing)
@@ -530,13 +567,12 @@ for i in range(1,k+1):
             continue
         data2[var]=np.zeros((len(tlist)+1,nz))
         if var == 'Press[Pa]':
-            data2[var][t,:]=pres_newfrc[:]
+            for t in range(len(tlist)):
+                data2[var][t,:]=pres_newfrc[:]
             continue
         for t in range(len(tlist)):
             data2[var][t,:]=np.interp(pres_newfrc,pres_frc[2,:][::-1],frcs_i[var][t,:][::-1])
     write_forcings(data2,m_dir+'/c_'+str(i)+'/input/case_setups/arm_forcings.in')
-
-#sys.exit()
 
 for i in range(1,k+1):
     frc_file = m_dir+'/c_'+str(i)+'/input/case_setups/arm_forcings.in'
@@ -553,25 +589,27 @@ for i in range(1,len(tlist)):
         tmps[j-1,:]=fp['T_in_K'][int(round(n_rest-1)),:,0,0]
         rtms[j-1,:]=fp['rtm'][int(round(n_rest-1)),:,0,0]
         fp.close()
-    
+
+    doflux = True
+    if frcs[1]['T_f[K\s]'][i,0]<0:
+        doflux=False
+
     # compute and define fluxes
-    zri = int(np.floor((zmax-z_r)/dz)+1)
-    F_T = circ_flux(W,tmps,tmps,zri,H2[i,:],V)
-    F_r = circ_flux(W,tmps,rtms,zri,H2[i,:],V)
+    if doflux:
+        zri = int(np.floor((zmax-z_r)/dz)+1)
+        F_T = circ_flux(W,tmps,tmps,c_t,zri,H2[i,:],V)
+        F_r = circ_flux(W,tmps,rtms,c_r,zri,H2[i,:],V)
 
     for j in list(range(1,k+1)):
         frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
         
-        # Change Flux to forcings
-        frcs[j]['T_f[K\s]'][i,:]=frcs[j]['T_f[K\s]'][i,:]-\
+        if doflux:
+            # Change Flux to forcings
+            frcs[j]['T_f[K\s]'][i,:]=frcs[j]['T_f[K\s]'][i,:]-\
                                    np.sum(F_T[j-1,:,:],axis=0)
-        frcs[j]['rtm_f[kg\kg\s]'][i,:]=frcs[j]['rtm_f[kg\kg\s]'][i,:]-\
+            frcs[j]['rtm_f[kg\kg\s]'][i,:]=frcs[j]['rtm_f[kg\kg\s]'][i,:]-\
                                          np.sum(F_r[j-1,:,:],axis=0)
-
-        # find forcing value at center of the next run
-        #Et_0 = frcs['T_f[K\s]'][t0i_f,:]
-        #frcs['T_f[K\s]'][t0i_f,:]=et_0[:]
-        write_forcings(frcs[j],frc_file)
+            write_forcings(frcs[j],frc_file)
 
         # copy output files to new location
         c_dir = m_dir+'/c_'+str(j)+'/'
@@ -611,6 +649,7 @@ for i in range(1,len(tlist)):
         print('STARTING RUN: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
         subprocess.run(rfile+' arm',shell=True,stdout=subprocess.DEVNULL)
         print('RUN COMPLETE: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
+se) [12:49 tsw35@chaney-cluster.egr.duke.edu test_cpl4]$ cd k_2/
 
 # ---------- #
 # AGG OUTPUT #
