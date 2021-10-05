@@ -7,7 +7,6 @@ import argparse
 # USER INPUTS #
 # ----------- #
 main_dir = '/home/tsw35/tyche/clubb/test_cpl5/'
-nx = 1000
 force_agg = True
 dt = 60 #FIXME should get from arm_model.in
 out_var = {'zm': {'latitude':[],'longitude':[],'altitude':[],'time':[],\
@@ -15,7 +14,8 @@ out_var = {'zm': {'latitude':[],'longitude':[],'altitude':[],'time':[],\
                   'thlp2_ma':[],'thlp2_forcing':[],'thlp2':[],'wp2':[],'up2':[],\
                   'vp2':[]},\
         'zt': {'latitude':[],'longitude':[],'altitude':[],'time':[],'thlm':[],\
-                  'um':[],'vm':[],'p_in_Pa':[],'rtm':[],'T_in_K':[]},\
+                  'um':[],'vm':[],'p_in_Pa':[],'rtm':[],'T_in_K':[],'thvm':[],\
+                  'ug':[],'vg':[],'w_bar':[],'cloud_cover':[],'rho':[]},\
         'sfc':{'latitude':[],'longitude':[],'altitude':[],'time':[],'sh':[],\
                'lh':[],'lwp':[],'ustar':[],'cc':[],'z_cloud_base':[],'T_sfc':[]}}
 remove_L0 = True #remove restart files
