@@ -11,6 +11,7 @@ import datetime
 import sklearn.cluster
 import netCDF4 as nc
 import shutil
+from scipy.stats import beta
 
 # ------------------------- #
 # USER INPUTS and CONSTANTS #
@@ -37,6 +38,7 @@ nx      = 1000 # number of gridcells in each direction
 dx      = 100  # resolution of surface grid in meters
 dz      = 40 # dz
 zmax    = 10000
+dzc     = 1000
 nz      = int(np.floor(zmax/dz)+1)
 stdate  = '2017-07-16T12:00:00.000'# start date iso format
 enddate = '2017-07-17T03:00:00.000'# end date iso format
@@ -78,6 +80,9 @@ z_r     = args.z_r
 c_r     = args.c_r
 c_t     = args.c_t
 
+#### EXTRAS ####
+dzi = int(floor(dzc/dz))
+
 
 # ---------------- #
 # HELPER FUNCITONS #
@@ -104,7 +109,8 @@ def read_sfc_data(var,nt,stdt,override='X'):
         varout_v[t,:] = var_v[:]
     return varout_g,varout_v
 
-#### COMPUTE CIRCULATION FLUX ####
+'''
+#### COMPUTE CIRCULATION FLUX (DEPRECATED) ####
 # W     : width of connection (k,k)
 # zs    : height in frcs space (nz)
 # T     : temperature, (k,nz)
@@ -115,7 +121,7 @@ def read_sfc_data(var,nt,stdt,override='X'):
 # T0    : reference temperature
 # l_het : lengthscale of heterogeneity
 # F[k1,k2,z] means flux from k1 to k2. (+) is net flux out of k1
-def circ_flux(W,T,lam,c_,H,V,zr_i,zr_i2=0,zr_i3=0,dz_=dz,nz_=nz,dsm=dsmooth,k=k,T0=T0,l=l_het):
+def circ_flux_dpct(W,T,lam,c_,H,V,zr_i,zr_i2=0,zr_i3=0,dz_=dz,nz_=nz,dsm=dsmooth,k=k,T0=T0,l=l_het):
     F = np.zeros((k,k,nz_))
     denom = nz_-(zr_i+dsm)
     F_sum = np.zeros((k,k))
@@ -192,6 +198,81 @@ def circ_flux(W,T,lam,c_,H,V,zr_i,zr_i2=0,zr_i3=0,dz_=dz,nz_=nz,dsm=dsmooth,k=k,
     return F
                     
     #FIXME consider virtual potential temperature vs temperature!!
+'''
+
+#### COMPUTE CIRCULATION FLUX ####
+def circ_flux((W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz)
+    """
+    calculate the circulating flux and assign its height/thickness
+    
+    Parameters
+    ----------
+    W  : int(k,k)
+        Width of connection between two columns
+    T  : float(k,nz)
+        The potential temperature
+    lam: float(k,nz)
+        The species being fluxed; usually temperature or moisture
+    c_ : float
+        Constant flux parameter
+    H  : float(k)
+        Area average surface sensible heat flux
+    V  : float(k)
+        Volume of one layer
+    vpt: float(k,nz)
+        Virtual potential temperature
+    k  : int
+        Number of columns
+    T0 : float
+        Reference Temperature
+    l  : float
+        Lengthscale of heterogeneity
+    dzc: int
+        Thickness of circulation in gridspace
+    dz_: int
+        Thickness of one layer in meters
+
+    Returns
+    -------
+    float(k,k,nz)
+        Flux from k1 to k2. (+) is net flux out of k1 
+    
+    """
+    
+    # add the filter to make it smoother (beta)
+    a = 1.5
+    b = 1.5
+    adj = beta.pdf(np.linspace(beta.ppf(.001,a,b),beta.ppf(.999,a,b),dzi),a,b)
+    adj =adj/np.sum(adj)
+
+    F = np.zeros((k,k,vpt.shape[1]))
+    for k1 in range(k):
+        for k2 in range(k):
+            if k1==k2:
+                continue
+            sgn = (H[k2]-H[k1])/np.abs(H[k2]-H[k1])
+            if sgn<0:
+                k_low=k2
+                k_hi =k1
+            else:
+                k_low=k1
+                k_hi =k2
+
+            # identify circulation height #FIXME only works (well) for k=2
+            minz = np.where(vpt[k_hi,:]-vpt[k_low,:]<0)[0]
+            
+            T1m = np.mean(T[k1,0:dzi])
+            T2m = np.mean(T[k2,0:dzi])
+            ur = np.abs(T1m-T2m)/T0*9.81**(.5)*l**(.5)
+            
+            F[k1,k2,0:dzi] = c_*W[k1,k2]*dz_*ur*np.mean(lam[k_low,0:dzi])\
+                             /(V[k_hi])*sgn*adj
+            F[k1,k2,minz:minz+dzi] = -c_*W[k1,k2]*dz_*ur*\
+                           np.mean(lam[k_hi,minz:minz+dzi])/(V[k_hi])*sgn*adj+\
+                           F[k1,k2,minz:minz+dzi]
+
+    return F
+
 
 #### FIND NEAREST VALUE IN AN ARRAY ####
 def find_nearest(array, value):
@@ -582,6 +663,7 @@ fp.write('dx      = '+str(dx)+' # surface grid resolution\n')
 fp.write('dz      = '+str(dz)+' # vertical grid resolution\n')
 fp.write('zmax    = '+str(zmax)+' # maximum height in clubb\n')
 fp.write('z_r     = '+str(z_r)+' # height where we switch sign of circ flux\n')
+fp.write('dzc     = '+str(dzc)+' # thickness of circulation if no z_r used\n')
 fp.write('stdate  = '+str(stdate)+' # start date\n')
 fp.write('enddate = '+str(enddate)+' # end date\n')
 fp.write('\nRan at: '+str(datetime.datetime.today()))
@@ -620,6 +702,7 @@ for i in range(1,len(tlist)):
     tmps = np.zeros((k,nz))
     rtms = np.zeros((k,nz))
     thlm = np.zeros((k,nz))
+    thvm = np.zeros((k,nz))
 
     # Load in the temperature and mixing ratio
     for j in range(1,k+1):
@@ -627,6 +710,7 @@ for i in range(1,len(tlist)):
         tmps[j-1,:]=fp['T_in_K'][int(round(n_rest-1)),:,0,0]
         rtms[j-1,:]=fp['rtm'][int(round(n_rest-1)),:,0,0]
         thlm[j-1,:]=fp['thlm'][int(round(n_rest-1)),:,0,0]
+        thvm[j-1,:]=fp['thvm'][int(round(n_rest-1)),:,0,0]
         fp.close()
 
     # check if there is surface heating; if no surface heating no flux
@@ -636,11 +720,15 @@ for i in range(1,len(tlist)):
 
     # compute and define fluxes
     if doflux:
-        zri = int(np.floor((z_r)/dz)+1)
-        zri2 = int(np.floor((z_r2)/dz)+1)
-        zri3 = int(np.floor((z_r3)/dz)+1)
-        F_T = circ_flux(W,thlm,tmps,c_t,H2[i,:],V,zri,zri2,zri3)
-        F_r = circ_flux(W,thlm,rtms,c_r,H2[i,:],V,zri,zri2,zri3)
+        # OLD WAY
+        #zri = int(np.floor((z_r)/dz)+1)
+        #zri2 = int(np.floor((z_r2)/dz)+1)
+        #zri3 = int(np.floor((z_r3)/dz)+1)
+        #F_T = circ_flux(W,thlm,tmps,c_t,H2[i,:],V,zri,zri2,zri3)
+        #F_r = circ_flux(W,thlm,rtms,c_r,H2[i,:],V,zri,zri2,zri3)
+        
+        F_T = circ_flux(W,thlm,tmps,c_t,H2[i,:],V,thvm)
+        F_r = circ_flux(W,thlm,rtms,c_r,H2[i,:],V,thvm)
 
     for j in list(range(1,k+1)):
         frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
