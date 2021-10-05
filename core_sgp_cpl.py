@@ -58,7 +58,7 @@ for folder in os.listdir(sgp_dir)[rank::size]:
 
 
     # find the date and time of the run
-    fp = open('../'+file+'/k_1/c_1/input/arm_model.in','r')
+    fp = open('/home/tsw35/tyche/clubb/'+file+'/k_1/c_1/input/arm_model.in','r')
     for line in fp.readlines():
         if line[0:3]=='day':
             lp = line.split(' ')
@@ -90,10 +90,11 @@ for folder in os.listdir(sgp_dir)[rank::size]:
     en_str = endt.strftime('%Y-%m-%dT%H:%M:%S')
     
     # run the simple script
-    cmd1 = 'python cpl_lrg_frc.py -k '+str(k)+' -i '+cpl_dir[3:]+file+' -s '+st_str+' -e '+en_str+' -c '+sgp_dir+folder+'/ -n '+str(nx)+' -d '+str(dx)
+    #cmd1 = 'python cpl_lrg_frc.py -k '+str(k)+' -i '+cpl_dir[3:]+file+' -s '+st_str+' -e '+en_str+' -c '+sgp_dir+folder+'/ -n '+str(nx)+' -d '+str(dx)
+    cmd1 = 'python cpl_ant.py -l 40000 -d '+str(dx)+' -i '+cpl_dir[-8:]+file+' -s '+st_str+' -e '+en_str+' -c '+sgp_dir+folder+'/ -n '+str(nx)+' -k '+str(k)
     print('#######\n'+cmd1+'\n'+'rank: '+str(rank)+'\n#######')
     cmd2 = 'python cpl_agg.py -i '+cpl_dir+file+'/'
-    #subprocess.run(cmd1,shell=True)
+    subprocess.run(cmd1,shell=True)
     subprocess.run(cmd2,shell=True)
     print('#######\n'+cmd2+'\n'+'rank: '+str(rank)+'\n#######')
 

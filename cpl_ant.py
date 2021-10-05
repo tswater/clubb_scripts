@@ -19,7 +19,7 @@ import shutil
 #### CONSTANTS ####
 # run options
 n_rest     = 5 # number of timesteps between restart
-delta_t    = 60 # in seconds, for CLUBB
+delta_t    = 60 # in seconds, for CLUBB  ## DOES NOT CHANGE MODEL VALUE
 dsmooth    = 5 # number of levels over which to switch sign of circ flux
 T0         = 300 # reference temperature; matched to CLUBB
 c_r        = .02 # factor for moisture fluxes
@@ -41,10 +41,11 @@ nz      = int(np.floor(zmax/dz)+1)
 stdate  = '2017-07-16T12:00:00.000'# start date iso format
 enddate = '2017-07-17T03:00:00.000'# end date iso format
 dirname = 'test_cpl5'
-l_het   =  10000 # Lengthscale of heterogeneity in meters
+l_het   =  20000 # Lengthscale of heterogeneity in meters
 # FIXME as nate for a better first guess of l_het after we give him baby space
-z_r     = 5000 # height where we switch sign of circulation flux
-
+z_r     = 1000 # height where we turn off the lower near surface flux
+z_r2    = 3500
+z_r3    = 4500 
 #### PARSE ####
 
 prs = argparse.ArgumentParser(description='Short sample app')
@@ -114,27 +115,60 @@ def read_sfc_data(var,nt,stdt,override='X'):
 # T0    : reference temperature
 # l_het : lengthscale of heterogeneity
 # F[k1,k2,z] means flux from k1 to k2. (+) is net flux out of k1
-def circ_flux(W,T,lam,c_,zr_i,H,V,zr_i2=0,dz_=dz,nz_=nz,dsm=dsmooth,k=k,T0=T0,l=l_het):
+def circ_flux(W,T,lam,c_,H,V,zr_i,zr_i2=0,zr_i3=0,dz_=dz,nz_=nz,dsm=dsmooth,k=k,T0=T0,l=l_het):
     F = np.zeros((k,k,nz_))
     denom = nz_-(zr_i+dsm)
     F_sum = np.zeros((k,k))
     F_sumout = np.zeros((k,k))
+    print(zr_i)
+    print(zr_i2)
+    print(zr_i3)
     for k1 in range(k):
         for k2 in range(k):
             if k1==k2:
                 continue
-
-            # homogeneous 2 sector case
-            if zr_i2>0:
-                pass
-            # level by level case
-            sgn = -(H[k2]-H[k1])/np.abs(H[k2]-H[k1])
+            
+            sgn = (H[k2]-H[k1])/np.abs(H[k2]-H[k1])
             if sgn<0:
                 k_low=k2
                 k_hi =k1
             else:
                 k_low=k1
                 k_hi =k2
+
+            # homogeneous 2 sector case
+            if zr_i2>0:
+                fracsum = 0
+                for i in range(1,dsm):
+                    fracsum = fracsum+i/dsm
+                T1m = np.mean(T[k1,0:zr_i])
+                T2m = np.mean(T[k2,0:zr_i])
+                ur = np.abs(T1m-T2m)/T0*9.81**(.5)*l**(.5)
+                ur2 = ur*(zr_i+fracsum)/(zr_i3-zr_i2+2*fracsum)
+                
+                # low level flux
+                F[k1,k2,0:zr_i] = c_*W[k1,k2]*dz_*ur*\
+                                  np.mean(lam[k_low,0:zr_i])/(V[k_hi])*sgn
+                for i in range(1,dsm):
+                    F[k1,k2,zr_i+i-1]=c_*W[k1,k2]*dz_*ur*\
+                                      np.mean(lam[k_low,0:zr_i])/\
+                                      (V[k_hi])*sgn*(dsm-i)/(dsm)
+                
+                # high level flux
+                F[k1,k2,zr_i2:zr_i3]=-c_*W[k1,k2]*dz_*ur2*np.mean(lam[k_hi,zr_i2:zr_i3])/(V[k_low])*sgn
+                for i in range(1,dsm):
+                    F[k1,k2,zr_i2-i]=-c_*W[k1,k2]*dz_*ur2*\
+                                     np.mean(lam[k_hi,zr_i2:zr_i3])/\
+                                     (V[k_low])*sgn*(dsm-i)/(dsm)
+                for i in range(1,dsm):
+                    F[k1,k2,zr_i3+i-1]=-c_*W[k1,k2]*dz_*ur2*\
+                                     np.mean(lam[k_hi,zr_i2:zr_i3])/\
+                                     (V[k_low])*sgn*(dsm-i)/(dsm)
+                continue
+            # level by level case
+            # FIXME we have an issue here; mass balance 
+            # (ie ignoring T and rtm just looking at mass of air)
+            # is off on a layer by layer basis
             test=0
             for z in range(nz_):
                 if z<=(zr_i-dsm):
@@ -152,7 +186,9 @@ def circ_flux(W,T,lam,c_,zr_i,H,V,zr_i2=0,dz_=dz,nz_=nz,dsm=dsmooth,k=k,T0=T0,l=
                     test=test+1
                     F[k1,k2,z]=-1/denom*F_sum[k1,k2]
                     F_sumout[k1,k2] = F_sumout[k1,k2]+F[k1,k2,z]
-            print(str(denom)+' '+str(test))
+    print(F[0,1,0])
+    print(F[0,1,-1])
+    print()
     return F
                     
     #FIXME consider virtual potential temperature vs temperature!!
@@ -574,6 +610,7 @@ for i in range(1,k+1):
             data2[var][t,:]=np.interp(pres_newfrc,pres_frc[2,:][::-1],frcs_i[var][t,:][::-1])
     write_forcings(data2,m_dir+'/c_'+str(i)+'/input/case_setups/arm_forcings.in')
 
+# read in forcings
 for i in range(1,k+1):
     frc_file = m_dir+'/c_'+str(i)+'/input/case_setups/arm_forcings.in'
     frcs[i] = read_forcings(frc_file,nz)
@@ -582,23 +619,28 @@ for i in range(1,len(tlist)):
     t1 = t0+n_rest*delta_t
     tmps = np.zeros((k,nz))
     rtms = np.zeros((k,nz))
+    thlm = np.zeros((k,nz))
 
     # Load in the temperature and mixing ratio
     for j in range(1,k+1):
         fp = nc.Dataset(m_dir+'/c_'+str(j)+'/output/arm_zt.nc','r')
         tmps[j-1,:]=fp['T_in_K'][int(round(n_rest-1)),:,0,0]
         rtms[j-1,:]=fp['rtm'][int(round(n_rest-1)),:,0,0]
+        thlm[j-1,:]=fp['thlm'][int(round(n_rest-1)),:,0,0]
         fp.close()
 
+    # check if there is surface heating; if no surface heating no flux
     doflux = True
     if frcs[1]['T_f[K\s]'][i,0]<0:
         doflux=False
 
     # compute and define fluxes
     if doflux:
-        zri = int(np.floor((zmax-z_r)/dz)+1)
-        F_T = circ_flux(W,tmps,tmps,c_t,zri,H2[i,:],V)
-        F_r = circ_flux(W,tmps,rtms,c_r,zri,H2[i,:],V)
+        zri = int(np.floor((z_r)/dz)+1)
+        zri2 = int(np.floor((z_r2)/dz)+1)
+        zri3 = int(np.floor((z_r3)/dz)+1)
+        F_T = circ_flux(W,thlm,tmps,c_t,H2[i,:],V,zri,zri2,zri3)
+        F_r = circ_flux(W,thlm,rtms,c_r,H2[i,:],V,zri,zri2,zri3)
 
     for j in list(range(1,k+1)):
         frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
@@ -649,7 +691,6 @@ for i in range(1,len(tlist)):
         print('STARTING RUN: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
         subprocess.run(rfile+' arm',shell=True,stdout=subprocess.DEVNULL)
         print('RUN COMPLETE: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
-se) [12:49 tsw35@chaney-cluster.egr.duke.edu test_cpl4]$ cd k_2/
 
 # ---------- #
 # AGG OUTPUT #
