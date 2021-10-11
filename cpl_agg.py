@@ -15,7 +15,7 @@ out_var = {'zm': {'latitude':[],'longitude':[],'altitude':[],'time':[],\
                   'vp2':[]},\
         'zt': {'latitude':[],'longitude':[],'altitude':[],'time':[],'thlm':[],\
                   'um':[],'vm':[],'p_in_Pa':[],'rtm':[],'T_in_K':[],'thvm':[],\
-                  'ug':[],'vg':[],'w_bar':[],'cloud_cover':[],'rho':[]},\
+                  'ug':[],'vg':[],'wm':[],'cloud_cover':[],'rho':[]},\
         'sfc':{'latitude':[],'longitude':[],'altitude':[],'time':[],'sh':[],\
                'lh':[],'lwp':[],'ustar':[],'cc':[],'z_cloud_base':[],'T_sfc':[]}}
 remove_L0 = True #remove restart files

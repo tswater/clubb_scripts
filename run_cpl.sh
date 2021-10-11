@@ -5,5 +5,4 @@
 #SBATCH --output="logclb2.txt"
 #SBATCH --exclusive
 
-time mpiexec -n 22 python core_sgp_cpl.py
-#time mpiexec -n 12 python lhet_iterate.py
+time mpiexec -n 12 python lhet_iterate.py

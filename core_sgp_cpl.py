@@ -16,7 +16,9 @@ size = comm.Get_size()
 k = 2
 dx = 250
 nx = 401
-cpl_dir = '/home/tsw35/tyche/clubb/sgp_cpl/'
+lhet = 5000
+cpl_subdir = 'sgp_l'+str(lhet)+'/'
+cpl_dir = '/home/tsw35/tyche/clubb/'+cpl_subdir
 sgp_dir = '/stor/soteria/hydro/shared/lasso_for_tyler/'
 
 def strptime(dtstr):
@@ -58,7 +60,7 @@ for folder in os.listdir(sgp_dir)[rank::size]:
 
 
     # find the date and time of the run
-    fp = open('/home/tsw35/tyche/clubb/'+file+'/k_1/c_1/input/arm_model.in','r')
+    fp = open('/home/tsw35/tyche/clubb/sgp_nocpl/'+file+'/k_1/c_1/input/arm_model.in','r')
     for line in fp.readlines():
         if line[0:3]=='day':
             lp = line.split(' ')
@@ -85,13 +87,16 @@ for folder in os.listdir(sgp_dir)[rank::size]:
     stdt = pre_dt+datetime.timedelta(seconds=t_init)
     endt = pre_dt+datetime.timedelta(seconds=t_final)
     
+    dtij = datetime.datetime(2017,7,16,1,1)
+    delt = datetime.timedelta(days=1)
+
     # convert to iso strings
     st_str = stdt.strftime('%Y-%m-%dT%H:%M:%S')
     en_str = endt.strftime('%Y-%m-%dT%H:%M:%S')
     
     # run the simple script
     #cmd1 = 'python cpl_lrg_frc.py -k '+str(k)+' -i '+cpl_dir[3:]+file+' -s '+st_str+' -e '+en_str+' -c '+sgp_dir+folder+'/ -n '+str(nx)+' -d '+str(dx)
-    cmd1 = 'python cpl_ant.py -l 40000 -d '+str(dx)+' -i '+cpl_dir[-8:]+file+' -s '+st_str+' -e '+en_str+' -c '+sgp_dir+folder+'/ -n '+str(nx)+' -k '+str(k)
+    cmd1 = 'python cpl_ant.py -l '+str(lhet)+' -d '+str(dx)+' -i '+cpl_subdir+file+' -s '+st_str+' -e '+en_str+' -c '+sgp_dir+folder+'/ -n '+str(nx)+' -k '+str(k)
     print('#######\n'+cmd1+'\n'+'rank: '+str(rank)+'\n#######')
     cmd2 = 'python cpl_agg.py -i '+cpl_dir+file+'/'
     subprocess.run(cmd1,shell=True)

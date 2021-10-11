@@ -23,8 +23,8 @@ n_rest     = 5 # number of timesteps between restart
 delta_t    = 60 # in seconds, for CLUBB  ## DOES NOT CHANGE MODEL VALUE
 dsmooth    = 5 # number of levels over which to switch sign of circ flux
 T0         = 300 # reference temperature; matched to CLUBB
-c_r        = .02 # factor for moisture fluxes
-c_t        = .001 # factor for temperature fluxes
+c_r        = .00125 # factor for moisture fluxes
+c_t        = .0000625 # factor for temperature fluxes
 
 # directories
 sfc_dir   = '/stor/soteria/hydro/shared/sgp_surfaces/dx0100nx1000/'
@@ -81,7 +81,7 @@ c_r     = args.c_r
 c_t     = args.c_t
 
 #### EXTRAS ####
-dzi = int(floor(dzc/dz))
+dzi = int(np.floor(dzc/dz))
 
 
 # ---------------- #
@@ -201,7 +201,7 @@ def circ_flux_dpct(W,T,lam,c_,H,V,zr_i,zr_i2=0,zr_i3=0,dz_=dz,nz_=nz,dsm=dsmooth
 '''
 
 #### COMPUTE CIRCULATION FLUX ####
-def circ_flux((W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz)
+def circ_flux(W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz):
     """
     calculate the circulating flux and assign its height/thickness
     
@@ -227,7 +227,7 @@ def circ_flux((W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz)
         Reference Temperature
     l  : float
         Lengthscale of heterogeneity
-    dzc: int
+    dzi: int
         Thickness of circulation in gridspace
     dz_: int
         Thickness of one layer in meters
@@ -243,7 +243,7 @@ def circ_flux((W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz)
     a = 1.5
     b = 1.5
     adj = beta.pdf(np.linspace(beta.ppf(.001,a,b),beta.ppf(.999,a,b),dzi),a,b)
-    adj =adj/np.sum(adj)
+    adj =adj/np.sum(adj)*dzi
 
     F = np.zeros((k,k,vpt.shape[1]))
     for k1 in range(k):
@@ -259,7 +259,7 @@ def circ_flux((W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz)
                 k_hi =k2
 
             # identify circulation height #FIXME only works (well) for k=2
-            minz = np.where(vpt[k_hi,:]-vpt[k_low,:]<0)[0]
+            minz = int(np.where(vpt[k_hi,:]-vpt[k_low,:]<0)[0][0])
             
             T1m = np.mean(T[k1,0:dzi])
             T2m = np.mean(T[k2,0:dzi])
@@ -270,7 +270,10 @@ def circ_flux((W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz)
             F[k1,k2,minz:minz+dzi] = -c_*W[k1,k2]*dz_*ur*\
                            np.mean(lam[k_hi,minz:minz+dzi])/(V[k_hi])*sgn*adj+\
                            F[k1,k2,minz:minz+dzi]
-
+    print(F)
+    print(V)
+    print(W)
+    print()
     return F
 
 
@@ -614,7 +617,7 @@ fp['H_clst'][:]=H_clst[:]
 print(np.mean(H_clst,axis=0))
 
 # compute the volume of each cluster
-V = clst_frac*dz*k_masks.size*dx*dx
+V = clst_frac*dz*nx*nx*dx*dx
 
 #sys.exit()
 
