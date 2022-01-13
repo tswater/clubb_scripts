@@ -33,7 +33,7 @@ blank_run = '/home/tsw35/soteria/clubb/clubb_scripts/run_/' # a clean run folder
 cbin_dir  = '/home/tsw35/soteria/software/CLUBB/bin/' # bin for clubb
 
 #### DEFAULTS ####
-k       = 2 # number of clusters
+k       = 1 # number of clusters
 nx      = 1000 # number of gridcells in each direction
 dx      = 100  # resolution of surface grid in meters
 dz      = 40 # dz
@@ -42,12 +42,14 @@ dzc     = 1000
 nz      = int(np.floor(zmax/dz)+1)
 stdate  = '2017-07-16T12:00:00.000'# start date iso format
 enddate = '2017-07-17T03:00:00.000'# end date iso format
-dirname = 'test_cpl5'
-l_het   =  20000 # Lengthscale of heterogeneity in meters
+dirname = 'test_cpl6'
+l_het   =  40000 # Lengthscale of heterogeneity in meters
 # FIXME as nate for a better first guess of l_het after we give him baby space
 z_r     = 1000 # height where we turn off the lower near surface flux
 z_r2    = 3500
 z_r3    = 4500 
+c_7     = -1 # default is non constant (-1), bouancy term, .3 to .8 is listed range
+
 #### PARSE ####
 
 prs = argparse.ArgumentParser(description='Short sample app')
@@ -63,7 +65,7 @@ prs.add_argument('-l', action='store', dest='l_het',type=int,default=l_het)
 prs.add_argument('-z', action='store', dest='z_r',type=int,default=z_r)
 prs.add_argument('-r', action='store', dest='c_r',type=float,default=c_r)
 prs.add_argument('-t', action='store', dest='c_t',type=float,default=c_t)
-
+prs.add_argument('-v', action='store', dest='c_7',type=float,default=c_7)
 
 args = prs.parse_args()
 
@@ -79,6 +81,7 @@ l_het   = args.l_het
 z_r     = args.z_r
 c_r     = args.c_r
 c_t     = args.c_t
+c_7     = args.c_7
 
 #### EXTRAS ####
 dzi = int(np.floor(dzc/dz))
@@ -369,6 +372,9 @@ def write_forcings(data,frc_path):
             fp.write(tmp)
     return
 
+
+##############################################################################
+
 # ------------- #
 # INITIAL SETUP #
 # ------------- #
@@ -394,6 +400,7 @@ try:
 except:
     shutil.rmtree(m_dir)
     os.mkdir(m_dir)
+
 # copy from the main run folder
 shutil.copytree(blank_run,w_dir+'/k_'+str(k)+'/c_1')
 
@@ -450,7 +457,41 @@ fp = open(m_dir+'/original_arm_model.in','w')
 for line in lines:
     fp.write(line)
 fp.close()
+
+# Fix tunable parameters, if necessary
+if c_7 == -1:
+    pass
+else:
+    lines=[]
+    fp = open(blank_run+'input/configurable_model_flags.in','r')
+    for line in fp:
+        if line[0:8] == 'l_use_C7':
+            lines.append('l_use_C7_Richardson          = .false.,\n')
+        else:
+            lines.append(line)
+    fp.close()
+    fp = open(m_dir+'/c_1/input/configurable_model_flags.in','w')
+    for line in lines:
+        fp.write(line)
+    fp.close()
     
+    lines=[]
+    fp = open(blank_run+'input/tunable_parameters.in','r')
+    for line in fp:
+        if line[0:3] == 'C7 ':
+            lines.append('C7          = '+str(c_7)+'00 ! Low Skewness in C7 '+\
+                         'Skewness Function. Units [-]\n')
+        elif line[0:3] == 'C7b':
+            lines.append('C7b         = '+str(c_7)+'00 ! High Skewness in C7 '+\
+                         'Skewness Function. Units [-]\n')
+        else:
+            lines.append(line)
+    fp.close()
+    fp = open(m_dir+'/c_1/input/tunable_parameters.in','w')
+    for line in lines:
+        fp.write(line)
+    fp.close()
+
 
 for i in list(range(2,k+1)):
     shutil.copytree(m_dir+'/c_1',m_dir+'/c_'+str(i))
@@ -637,9 +678,11 @@ for i in range(k):
 # FIRST TIMESTEP 
 for j in list(range(1,k+1)):
     # run the script
-    rfile = w_dir+'/k_'+str(k)+'/c_'+str(j)+'/run_scripts/run_scm.bash'
+    cbasedir= w_dir+'/k_'+str(k)+'/c_'+str(j)
+    rfile = cbasedir+'/run_scripts/run_scm.bash'
     print(rfile)
-    subprocess.run(rfile+' arm >'+'log'+str(j),shell=True,stdin=subprocess.DEVNULL)
+    cmd = rfile+' arm -p '+cbasedir+'/input/tunable_parameters.in'+' >'+'log'+str(j)
+    subprocess.run(cmd,shell=True,stdin=subprocess.DEVNULL)
     print()
     print(str(j) + ' IS COMPLETE ',flush=True)
     os.mkdir(w_dir+'/k_'+str(k)+'/c_'+str(j)+'/restart')
@@ -778,9 +821,13 @@ for i in range(1,len(tlist)):
         fp.close()
     
         # run restart
-        rfile = w_dir+'/k_'+str(k)+'/c_'+str(j)+'/run_scripts/run_scm.bash'
+        cbasedir= w_dir+'/k_'+str(k)+'/c_'+str(j)
+        rfile = cbasedir+'/run_scripts/run_scm.bash'
+        print(rfile)
+        cmd = rfile+' arm -p '+cbasedir+'/input/tunable_parameters.in'
+        
         print('STARTING RUN: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
-        subprocess.run(rfile+' arm',shell=True,stdout=subprocess.DEVNULL)
+        subprocess.run(cmd,shell=True,stdout=subprocess.DEVNULL)
         print('RUN COMPLETE: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
 
 # ---------- #
