@@ -500,7 +500,7 @@ for i in list(range(2,k+1)):
     os.symlink(cbin_dir+'clubb_standalone',bindir+'clubb_standalone')
 
 
-# Read in the surface data (thanks for the weird format)
+# Read in the surface data
 # assume data is hourly 
 print('... read in surface data',flush=True)
 nt     = int((endt-stdt).seconds/3600)+1
