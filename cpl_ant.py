@@ -6,6 +6,7 @@ import sys
 import argparse
 import subprocess
 import numpy as np
+import random
 import os
 import datetime
 import sklearn.cluster
@@ -25,6 +26,7 @@ dsmooth    = 5 # number of levels over which to switch sign of circ flux
 T0         = 300 # reference temperature; matched to CLUBB
 c_r        = .00125 # factor for moisture fluxes
 c_t        = .0000625 # factor for temperature fluxes
+hggt       = 2 # hours after start to use surface as basis for l_het
 
 # directories
 sfc_dir   = '/stor/soteria/hydro/shared/sgp_surfaces/dx0100nx1000/'
@@ -43,8 +45,7 @@ nz      = int(np.floor(zmax/dz)+1)
 stdate  = '2017-07-16T12:00:00.000'# start date iso format
 enddate = '2017-07-17T03:00:00.000'# end date iso format
 dirname = 'test_cpl6'
-l_het   =  40000 # Lengthscale of heterogeneity in meters
-# FIXME as nate for a better first guess of l_het after we give him baby space
+l_het   =  40000 # Length of heterog. in meters; -1: calculate, -2: || to wind
 z_r     = 1000 # height where we turn off the lower near surface flux
 z_r2    = 3500
 z_r3    = 4500 
@@ -112,96 +113,6 @@ def read_sfc_data(var,nt,stdt,override='X'):
         varout_v[t,:] = var_v[:]
     return varout_g,varout_v
 
-'''
-#### COMPUTE CIRCULATION FLUX (DEPRECATED) ####
-# W     : width of connection (k,k)
-# zs    : height in frcs space (nz)
-# T     : temperature, (k,nz)
-# lam   : circulating species, (k,nz)
-# zr_i  : index in forcing space of switching period
-# H     : surface sensible heat flux (k)
-# k     : number of columns
-# T0    : reference temperature
-# l_het : lengthscale of heterogeneity
-# F[k1,k2,z] means flux from k1 to k2. (+) is net flux out of k1
-def circ_flux_dpct(W,T,lam,c_,H,V,zr_i,zr_i2=0,zr_i3=0,dz_=dz,nz_=nz,dsm=dsmooth,k=k,T0=T0,l=l_het):
-    F = np.zeros((k,k,nz_))
-    denom = nz_-(zr_i+dsm)
-    F_sum = np.zeros((k,k))
-    F_sumout = np.zeros((k,k))
-    print(zr_i)
-    print(zr_i2)
-    print(zr_i3)
-    for k1 in range(k):
-        for k2 in range(k):
-            if k1==k2:
-                continue
-            
-            sgn = (H[k2]-H[k1])/np.abs(H[k2]-H[k1])
-            if sgn<0:
-                k_low=k2
-                k_hi =k1
-            else:
-                k_low=k1
-                k_hi =k2
-
-            # homogeneous 2 sector case
-            if zr_i2>0:
-                fracsum = 0
-                for i in range(1,dsm):
-                    fracsum = fracsum+i/dsm
-                T1m = np.mean(T[k1,0:zr_i])
-                T2m = np.mean(T[k2,0:zr_i])
-                ur = np.abs(T1m-T2m)/T0*9.81**(.5)*l**(.5)
-                ur2 = ur*(zr_i+fracsum)/(zr_i3-zr_i2+2*fracsum)
-                
-                # low level flux
-                F[k1,k2,0:zr_i] = c_*W[k1,k2]*dz_*ur*\
-                                  np.mean(lam[k_low,0:zr_i])/(V[k_hi])*sgn
-                for i in range(1,dsm):
-                    F[k1,k2,zr_i+i-1]=c_*W[k1,k2]*dz_*ur*\
-                                      np.mean(lam[k_low,0:zr_i])/\
-                                      (V[k_hi])*sgn*(dsm-i)/(dsm)
-                
-                # high level flux
-                F[k1,k2,zr_i2:zr_i3]=-c_*W[k1,k2]*dz_*ur2*np.mean(lam[k_hi,zr_i2:zr_i3])/(V[k_low])*sgn
-                for i in range(1,dsm):
-                    F[k1,k2,zr_i2-i]=-c_*W[k1,k2]*dz_*ur2*\
-                                     np.mean(lam[k_hi,zr_i2:zr_i3])/\
-                                     (V[k_low])*sgn*(dsm-i)/(dsm)
-                for i in range(1,dsm):
-                    F[k1,k2,zr_i3+i-1]=-c_*W[k1,k2]*dz_*ur2*\
-                                     np.mean(lam[k_hi,zr_i2:zr_i3])/\
-                                     (V[k_low])*sgn*(dsm-i)/(dsm)
-                continue
-            # level by level case
-            # FIXME we have an issue here; mass balance 
-            # (ie ignoring T and rtm just looking at mass of air)
-            # is off on a layer by layer basis
-            test=0
-            for z in range(nz_):
-                if z<=(zr_i-dsm):
-                    ur = np.abs(T[k1,z]-T[k2,z])/T0*9.81**(.5)*l**(.5)
-                    F[k1,k2,z]=c_*W[k1,k2]*dz_*ur*lam[k_low,z]/V[k_hi]*sgn
-                    F_sum[k1,k2] = F_sum[k1,k2]+F[k1,k2,z]
-                elif z<zr_i:
-                    ur = np.abs(T[k1,z]-T[k2,z])/T0*9.81**(.5)*l**(.5)
-                    F[k1,k2,z]=c_*W[k1,k2]*dz_*ur*lam[k_low,z]*(zr_i-z)/dsm/V[k_hi]*sgn
-                elif z==zr_i:
-                    continue
-                elif z<(zr_i+dsm):
-                    F[k1,k2,z]=-F[k1,k2,zr_i-(z-zr_i)]
-                else:
-                    test=test+1
-                    F[k1,k2,z]=-1/denom*F_sum[k1,k2]
-                    F_sumout[k1,k2] = F_sumout[k1,k2]+F[k1,k2,z]
-    print(F[0,1,0])
-    print(F[0,1,-1])
-    print()
-    return F
-                    
-    #FIXME consider virtual potential temperature vs temperature!!
-'''
 
 #### COMPUTE CIRCULATION FLUX ####
 def circ_flux(W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz):
@@ -371,6 +282,212 @@ def write_forcings(data,frc_path):
                    data['ug[m\s]'][ti_,zi_],data["vg[m\s]"][ti_,zi_])
             fp.write(tmp)
     return
+    
+#### CALCULATE LENGTHSCALE OF HETEROGENEITY ####
+def estimate_l_het(l_het,Hg_,cut=.25,samp=.1):
+    '''
+        Parameters
+
+        l_het  : -1: compute full lengthscale, -2: compute parallel to wind
+        cut    : percentage cuttoff for lengthscale
+        Hg     : a N by N grid of the sensible heat fluxes
+        samp   : how many points to sample when constructing cov matrix
+                 as a percentage of total points. sample size is half the
+                 total when parallel to mean wind and samp is ignored
+    '''
+
+    # CASE 0: Regular constant lengthscale
+    if l_het>-1:
+        return l_het
+
+    # Common Setup for Cases 1 and 2
+    a_,b_ = Hg_.shape
+    r_H = np.zeros((a_,b_))
+    c_H = np.zeros((a_,b_))
+    for i in range(a_):
+        for j in range(b_):
+            r_H[i,j]=i*dx
+            c_H[i,j]=j*dx
+    H_flat = Hg_.flatten()
+    r_flat = r_H.flatten()
+    c_flat = c_H.flatten()
+
+
+    # CASE 1: Full heterogneeity 
+    if l_het == -1:
+
+        idx = np.random.choice(len(H_flat),size=int(round(len(H_flat)*samp)),replace=False)
+        H_sb = H_flat[idx]
+        r_Hsb = r_flat[idx]
+        c_Hsb = c_flat[idx]
+        mu=np.mean(H_sb)
+        a = (H_sb[:,np.newaxis].T - mu)*(H_sb[:,np.newaxis]-mu)
+        h = ((r_Hsb[:,np.newaxis] - r_Hsb.T)**2 + \
+            (c_Hsb[:,np.newaxis] - c_Hsb.T)**2)**0.5
+        Qf = a.flatten()
+        hf = h.flatten()
+
+        bins = np.linspace(0,50000,51)
+        means=np.zeros((len(bins)-1,))
+        for i in range(len(bins)-1):
+            means[i]=np.mean(Qf[(hf>bins[i])&(hf<bins[i+1])])
+
+        l_het_ = bins[0:-1][means<=(.25*means[0])][0]
+
+
+    # CASE 2: In Direction of Mean Wind
+    elif l_het == -2:
+        
+        # import mean wind information
+        sound_path = w_dir+'/k_'+str(k)+'/c_'+str(k)+\
+                   '/input/case_setups/arm_sounding.in'
+        fp=open(sound_path,'r')
+        u_=0
+        v_=0
+        for line in fp:
+            if line[0]=='!':
+                continue
+            if line[0]=='P':
+                continue
+            linesp = line.split(' ')
+            u_=float(linesp[3])
+            v_=float(linesp[4])
+        fp.close()
+        
+        # add random mean wind to avoid code issues under synthetic cases
+        u_=u_+random.uniform(-.0001*u_,.0001*u_)
+        v_=v_+random.uniform(-.0001*v_,.0001*v_)
+        
+        # normalize mean wind
+        u_p = u_/(u_**2+v_**2)**(1/2)
+        v_p = v_/(u_**2+v_**2)**(1/2)
+        
+        # select half the points; compute mu
+        idx = np.random.choice(len(H_flat),size=len(H_flat)/2,replace=False)
+        mu = np.mean(H_flat[idx])
+
+        # x heterogeneity
+        if np.abs(u_p)>(1/np.sqrt(2)):
+            Qf=[]
+            hf=[]
+            for i in range(a_):
+                idx_i = idx[r_flat[idx]==i]
+                H_sbi = H_flat[idx_i]
+                c_Hsbi= c_flat[idx_i]
+                a = (H_sbi[:,np.newaxis].T - mu)*(H_sbi[:,np.newaxis]-mu)
+                h = ((c_Hsbi[:,np.newaxis] - c_Hsbi.T)**2)**0.5
+                Qf.extend(a.flatten())
+                hf.extend(h.flatten())
+            bins = np.linspace(0,100000,101)
+            means=np.zeros((len(bins)-1,))
+            Qf=np.array(Qf)
+            hf=np.array(hf)
+            for j in range(len(bins)-1):
+                means[j]=np.mean(Qf[(hf>bins[j])&(hf<bins[j+1])])
+            try:
+                l_het_a = bins[0:-1][means<=(.25*means[0])][0]
+            except:
+                l_het_a = 100000
+            a_i = 1
+            a_j = 0
+                
+        
+        # xy heterogeneity
+        if (u_p*v_p)>0:
+            Qf=[]
+            hf=[]
+            for i in range(-round(min(a_,b_)/2),round(min(a_,b_)/2)):
+                idx_i = idx[(c_flat[idx]+i)==r_flat[idx]]
+                H_sbi = H_flat[idx_i]
+                c_Hsbi= c_flat[idx_i]
+                a = (H_sbi[:,np.newaxis].T - mu)*(H_sbi[:,np.newaxis]-mu)
+                h = ((c_Hsbi[:,np.newaxis] - c_Hsbi.T)**2)**0.5
+                Qf.extend(a.flatten())
+                hf.extend(h.flatten())
+            Qf=np.array(Qf)
+            hf=np.array(hf)
+            bins = np.linspace(0,100000,101)
+            means=np.zeros((len(bins)-1,))
+            for j in range(len(bins)-1):
+                means[j]=np.mean(Qf[(hf>bins[j])&(hf<bins[j+1])])
+            try:
+                l_het_b = bins[0:-1][means<=(.25*means[0])][0]
+            except:
+                l_het_b = 50000*np.sqrt(2)
+                
+            # i and j components of xy vector
+            b_i=1/np.sqrt(2)
+            b_j=1/np.sqrt(2)
+        
+        # x-y heterogeneity
+        if (u_p*v_p)<0:
+            Qf=[]
+            hf=[]
+            for i in range(round(min(a_,b_)/2),round(min(a_,b_)/2)*3):
+                idx_i = idx[(c_flat[idx]+i)==r_flat[idx]]
+                H_sbi = H_flat[idx_i]
+                c_Hsbi= c_flat[idx_i]
+                a = (H_sbi[:,np.newaxis].T - mu)*(H_sbi[:,np.newaxis]-mu)
+                h = ((c_Hsbi[:,np.newaxis] - c_Hsbi.T)**2)**0.5
+                Qf.extend(a.flatten())
+                hf.extend(h.flatten())
+            Qf=np.array(Qf)
+            hf=np.array(hf)
+            bins = np.linspace(0,100000,101)
+            means=np.zeros((len(bins)-1,))
+            for j in range(len(bins)-1):
+                means[j]=np.mean(Qf[(hf>bins[j])&(hf<bins[j+1])])
+            try:
+                l_het_b = bins[0:-1][means<=(.25*means[0])][0]
+            except:
+                l_het_b = 50000*np.sqrt(2)
+                
+            # i and j components of -xy vector
+            b_i=1/np.sqrt(2)
+            b_j=-1/np.sqrt(2)
+        
+
+        # y heterogeneity 
+        if np.abs(v_p)>(1/np.sqrt(2)):
+            Qf=[]
+            hf=[]
+            for i in range(b):
+                idx_i = idx[c_flat[idx]==i]
+                H_sbi = H_flat[idx_i]
+                r_Hsbi= r_flat[idx_i]
+                a = (H_sbi[:,np.newaxis].T - mu)*(H_sbi[:,np.newaxis]-mu)
+                h = ((r_Hsbi[:,np.newaxis] - r_Hsbi.T)**2)**(.5)
+                Qf.extend(a.flatten())
+                hf.extend(h.flatten())
+
+            bins = np.linspace(0,100000,101)
+            means=np.zeros((len(bins)-1,))
+            Qf=np.array(Qf)
+            hf=np.array(hf)
+            for j in range(len(bins)-1):
+                means[j]=np.mean(Qf[(hf>bins[j])&(hf<bins[j+1])])
+            try:
+                l_het_a = bins[0:-1][means<=(.25*means[0])][0]
+            except:
+                l_het_a = 100000
+            
+            # i and j components of y vector
+            a_i=0
+            a_j=1
+                               
+        # final computation; two cases depending on a_i
+        if a_i==1:
+            beta  = (v_p*a_i-u_p*a_j)/(b_j-b_i*a_j)
+            alpha = (u_p-beta*b_i)/a_i
+        else:
+            beta  = (u_p*a_j-v_p*a_i)/(b_i-b_j*a_i)
+            alpha = (v_p-beta*b_j)/a_j
+        
+        
+        l_het_=alpha*l_het_a+beta*l_het_b
+        
+
+    return l_het_
 
 
 ##############################################################################
@@ -512,6 +629,9 @@ lat_g,latv = read_sfc_data('',1,stdt,sfc_dir+'jsslatgrid_02')
 Tsfcv = (lwv/(5.67*10**(-8)))**(1/4)
 Tsfcg = (lwg/(5.67*10**(-8)))**(1/4)
 
+# Calculate Lengthscale of Heterogeneity
+Hgg = Hg[Hggt,:,:]
+l_het = estimate_l_het(l_het,Hgg)
 
 print('WRITE SURFACE FILES',flush=True)
 
@@ -766,13 +886,6 @@ for i in range(1,len(tlist)):
 
     # compute and define fluxes
     if doflux:
-        # OLD WAY
-        #zri = int(np.floor((z_r)/dz)+1)
-        #zri2 = int(np.floor((z_r2)/dz)+1)
-        #zri3 = int(np.floor((z_r3)/dz)+1)
-        #F_T = circ_flux(W,thlm,tmps,c_t,H2[i,:],V,zri,zri2,zri3)
-        #F_r = circ_flux(W,thlm,rtms,c_r,H2[i,:],V,zri,zri2,zri3)
-        
         F_T = circ_flux(W,thlm,tmps,c_t,H2[i,:],V,thvm)
         F_r = circ_flux(W,thlm,rtms,c_r,H2[i,:],V,thvm)
 
