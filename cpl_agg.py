@@ -12,12 +12,13 @@ dt = 60 #FIXME should get from arm_model.in
 out_var = {'zm': {'latitude':[],'longitude':[],'altitude':[],'time':[],\
                   'thlp2_ta':[],'thlp2_tp':[],'thlp2_dp1':[],'thlp2_dp2':[],\
                   'thlp2_ma':[],'thlp2_forcing':[],'thlp2':[],'wp2':[],'up2':[],\
-                  'vp2':[]},\
+                  'vp2':[],'Richardson_num':[]},\
         'zt': {'latitude':[],'longitude':[],'altitude':[],'time':[],'thlm':[],\
                   'um':[],'vm':[],'p_in_Pa':[],'rtm':[],'T_in_K':[],'thvm':[],\
                   'ug':[],'vg':[],'wm':[],'cloud_cover':[],'rho':[]},\
         'sfc':{'latitude':[],'longitude':[],'altitude':[],'time':[],'sh':[],\
-               'lh':[],'lwp':[],'ustar':[],'cc':[],'z_cloud_base':[],'T_sfc':[]}}
+               'lh':[],'lwp':[],'ustar':[],'cc':[],'z_cloud_base':[],'T_sfc':[],\
+               'z_inversion':[]}}
 remove_L0 = True #remove restart files
 
 #### ARG PARSER ####

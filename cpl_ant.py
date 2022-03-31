@@ -35,7 +35,7 @@ blank_run = '/home/tsw35/soteria/clubb/clubb_scripts/run_/' # a clean run folder
 cbin_dir  = '/home/tsw35/soteria/software/CLUBB/bin/' # bin for clubb
 
 #### DEFAULTS ####
-k       = 1 # number of clusters
+k       = 2 # number of clusters
 nx      = 1000 # number of gridcells in each direction
 dx      = 100  # resolution of surface grid in meters
 dz      = 40 # dz
@@ -44,8 +44,8 @@ dzc     = 1000
 nz      = int(np.floor(zmax/dz)+1)
 stdate  = '2017-07-16T12:00:00.000'# start date iso format
 enddate = '2017-07-17T03:00:00.000'# end date iso format
-dirname = 'test_cpl6'
-l_het   =  40000 # Length of heterog. in meters; -1: calculate, -2: || to wind
+dirname = 'test_cpl7'
+l_het   = -2 # Length of heterog. in meters; -1: calculate, -2: || to wind
 z_r     = 1000 # height where we turn off the lower near surface flux
 z_r2    = 3500
 z_r3    = 4500 
@@ -184,10 +184,10 @@ def circ_flux(W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz):
             F[k1,k2,minz:minz+dzi] = -c_*W[k1,k2]*dz_*ur*\
                            np.mean(lam[k_hi,minz:minz+dzi])/(V[k_hi])*sgn*adj+\
                            F[k1,k2,minz:minz+dzi]
-    print(F)
-    print(V)
-    print(W)
-    print()
+    #print(F)
+    #print(V)
+    #print(W)
+    #print()
     return F
 
 
@@ -284,7 +284,7 @@ def write_forcings(data,frc_path):
     return
     
 #### CALCULATE LENGTHSCALE OF HETEROGENEITY ####
-def estimate_l_het(l_het,Hg_,cut=.25,samp=.1):
+def estimate_l_het(l_het,Hg_,cut=.25,samp=10000):
     '''
         Parameters
 
@@ -292,8 +292,7 @@ def estimate_l_het(l_het,Hg_,cut=.25,samp=.1):
         cut    : percentage cuttoff for lengthscale
         Hg     : a N by N grid of the sensible heat fluxes
         samp   : how many points to sample when constructing cov matrix
-                 as a percentage of total points. sample size is half the
-                 total when parallel to mean wind and samp is ignored
+                 sample size is 10 times this when parallel to wind
     '''
 
     # CASE 0: Regular constant lengthscale
@@ -316,7 +315,7 @@ def estimate_l_het(l_het,Hg_,cut=.25,samp=.1):
     # CASE 1: Full heterogneeity 
     if l_het == -1:
 
-        idx = np.random.choice(len(H_flat),size=int(round(len(H_flat)*samp)),replace=False)
+        idx = np.random.choice(len(H_flat),size=samp,replace=False)
         H_sb = H_flat[idx]
         r_Hsb = r_flat[idx]
         c_Hsb = c_flat[idx]
@@ -333,7 +332,11 @@ def estimate_l_het(l_het,Hg_,cut=.25,samp=.1):
             means[i]=np.mean(Qf[(hf>bins[i])&(hf<bins[i+1])])
 
         l_het_ = bins[0:-1][means<=(.25*means[0])][0]
-
+        
+        print('Non Dimensional Lengthscale of Heterogeneity')
+        print(str(l_het_))
+        print()
+        
 
     # CASE 2: In Direction of Mean Wind
     elif l_het == -2:
@@ -349,9 +352,12 @@ def estimate_l_het(l_het,Hg_,cut=.25,samp=.1):
                 continue
             if line[0]=='P':
                 continue
+            if line[0]=='z':
+                continue
             linesp = line.split(' ')
             u_=float(linesp[3])
             v_=float(linesp[4])
+            break
         fp.close()
         
         # add random mean wind to avoid code issues under synthetic cases
@@ -363,7 +369,7 @@ def estimate_l_het(l_het,Hg_,cut=.25,samp=.1):
         v_p = v_/(u_**2+v_**2)**(1/2)
         
         # select half the points; compute mu
-        idx = np.random.choice(len(H_flat),size=len(H_flat)/2,replace=False)
+        idx = np.random.choice(len(H_flat),size=samp*10,replace=False)
         mu = np.mean(H_flat[idx])
 
         # x heterogeneity
@@ -451,7 +457,7 @@ def estimate_l_het(l_het,Hg_,cut=.25,samp=.1):
         if np.abs(v_p)>(1/np.sqrt(2)):
             Qf=[]
             hf=[]
-            for i in range(b):
+            for i in range(b_):
                 idx_i = idx[c_flat[idx]==i]
                 H_sbi = H_flat[idx_i]
                 r_Hsbi= r_flat[idx_i]
@@ -486,7 +492,9 @@ def estimate_l_het(l_het,Hg_,cut=.25,samp=.1):
         
         l_het_=alpha*l_het_a+beta*l_het_b
         
-
+        print('Heterogeneity in direction x:'+str(u_p)+'  y:'+str(v_p))
+        print(l_het_)
+        print('')
     return l_het_
 
 
@@ -629,10 +637,6 @@ lat_g,latv = read_sfc_data('',1,stdt,sfc_dir+'jsslatgrid_02')
 Tsfcv = (lwv/(5.67*10**(-8)))**(1/4)
 Tsfcg = (lwg/(5.67*10**(-8)))**(1/4)
 
-# Calculate Lengthscale of Heterogeneity
-Hgg = Hg[Hggt,:,:]
-l_het = estimate_l_het(l_het,Hgg)
-
 print('WRITE SURFACE FILES',flush=True)
 
 # write initial surface files using Nate's script
@@ -642,6 +646,9 @@ for i in list(range(k)):
     subprocess.run('python create_arm_data_cpl.py',shell=True)
     os.chdir(dir_old)
 
+# Calculate Lengthscale of Heterogeneity
+Hgg = Hg[hggt,:,:]
+l_het = estimate_l_het(l_het,Hgg)
 
 # extend arm_forcing.in
 nz_forcing = 37 #number of levels in original forcing file
@@ -661,7 +668,10 @@ for j in list(range(1,k+1)):
             data2[d]=np.zeros((int(nt_frc),nz_forcing))
             for l in range(nz_forcing):
                 data2[d][:,l]=np.interp(times_frc,data['time'],data[d][:,l])
+    
+    # save full structure aka "original" and other
     write_forcings(data2,frc_path)
+    write_forcings(data2,w_dir+'/arm_forcings_o.in')
 
 
 # ------- #
@@ -785,7 +795,9 @@ V = clst_frac*dz*nx*nx*dx*dx
 # --------- #
 # CORE LOOP #
 # --------- #
+# timestep list
 tlist = list(range(int(t_init),int(t_final),int(round(delta_t*n_rest))))
+
 H2 = np.zeros((len(tlist),k))
 tss = []
 for t in range(nt):
@@ -898,7 +910,14 @@ for i in range(1,len(tlist)):
                                    np.sum(F_T[j-1,:,:],axis=0)
             frcs[j]['rtm_f[kg\kg\s]'][i,:]=frcs[j]['rtm_f[kg\kg\s]'][i,:]-\
                                          np.sum(F_r[j-1,:,:],axis=0)
-            write_forcings(frcs[j],frc_file)
+        # Pull out required forcing timesteps
+        frcs_sm = {}
+        for var in frcs[j].keys():
+            if var == 'time':
+                frcs_sm[var]=frcs[j][var][i:i+2]
+            else:
+                frcs_sm[var]=frcs[j][var][i:i+2,:]
+        write_forcings(frcs_sm,frc_file)
 
         # copy output files to new location
         c_dir = m_dir+'/c_'+str(j)+'/'
@@ -942,6 +961,11 @@ for i in range(1,len(tlist)):
         print('STARTING RUN: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
         subprocess.run(cmd,shell=True,stdout=subprocess.DEVNULL)
         print('RUN COMPLETE: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
+
+#### OUTPUT FINAL FORCING ####
+for j in list(range(1,k+1)):
+    write_forcings(frcs[j],w_dir+'arm_forcings_f.in')
+
 
 # ---------- #
 # AGG OUTPUT #
