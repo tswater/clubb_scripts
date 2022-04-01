@@ -68,6 +68,7 @@ def get_lengthscale(data,dirc=-1,samp=5000,cut=.25):
 
 #################
 
+x=0
 test_time = '15'
 lens = []
 for file in os.listdir(day_dir):
@@ -79,12 +80,8 @@ for file in os.listdir(day_dir):
         except:
             Hg,Hv = read_sfc_data('sh',1,date,sgp_dir2+'sgp_'+file[8:16]+\
                                   '_00/'+'jsssh_bdy_02_'+datest+'-00')
-        lens.append(get_lengthscale(Hg))
-        print(datest+':  '+str(lens[-1]))
-
-print()
-print('MEDIAN:'+str(np.median(lens)))
-print('MEAN:  '+str(np.mean(lens)))
-print('MAX:   '+str(np.max(lens)))
-print('MIN:   '+str(np.min(lens)))
+        #lens.append(get_lengthscale(Hg))
+        #print(datest+':  '+str(lens[-1]))
+        x = x+1
+print(x)
 

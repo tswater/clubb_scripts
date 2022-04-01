@@ -35,7 +35,7 @@ blank_run = '/home/tsw35/soteria/clubb/clubb_scripts/run_/' # a clean run folder
 cbin_dir  = '/home/tsw35/soteria/software/CLUBB/bin/' # bin for clubb
 
 #### DEFAULTS ####
-k       = 2 # number of clusters
+k       = 1 # number of clusters
 nx      = 1000 # number of gridcells in each direction
 dx      = 100  # resolution of surface grid in meters
 dz      = 40 # dz
@@ -46,10 +46,10 @@ stdate  = '2017-07-16T12:00:00.000'# start date iso format
 enddate = '2017-07-17T03:00:00.000'# end date iso format
 dirname = 'test_cpl7'
 l_het   = -2 # Length of heterog. in meters; -1: calculate, -2: || to wind
-z_r     = 1000 # height where we turn off the lower near surface flux
-z_r2    = 3500
-z_r3    = 4500 
 c_7     = -1 # default is non constant (-1), bouancy term, .3 to .8 is listed range
+flux_on = 1 # turn on cirrculation flux (1) turn off (0)
+wind_cr = 1 # turn on directional wind corrections to flux (1) turn off (0)
+
 
 #### PARSE ####
 
@@ -63,10 +63,11 @@ prs.add_argument('-s', action='store', dest='start', default=stdate)
 prs.add_argument('-e', action='store', dest='end',default=enddate)
 prs.add_argument('-c', action='store', dest='sfc',default=sfc_dir)
 prs.add_argument('-l', action='store', dest='l_het',type=int,default=l_het)
-prs.add_argument('-z', action='store', dest='z_r',type=int,default=z_r)
 prs.add_argument('-r', action='store', dest='c_r',type=float,default=c_r)
 prs.add_argument('-t', action='store', dest='c_t',type=float,default=c_t)
 prs.add_argument('-v', action='store', dest='c_7',type=float,default=c_7)
+prs.add_argument('-f', action='store', dest='flux',type=int,default=flux_on)
+prs.add_argument('-w', action='store', dest='wc',type=int,default=wind_cr)
 
 args = prs.parse_args()
 
@@ -79,13 +80,17 @@ enddate = args.end
 dirname = args.dir
 sfc_dir = args.sfc
 l_het   = args.l_het
-z_r     = args.z_r
 c_r     = args.c_r
 c_t     = args.c_t
 c_7     = args.c_7
+flux_on = args.flux==1
+wind_cr = args.wc==1
 
 #### EXTRAS ####
 dzi = int(np.floor(dzc/dz))
+
+if k == 1:
+    flux_on = False
 
 
 # ---------------- #
@@ -115,7 +120,7 @@ def read_sfc_data(var,nt,stdt,override='X'):
 
 
 #### COMPUTE CIRCULATION FLUX ####
-def circ_flux(W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz):
+def circ_flux(W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz,w_=[0,0],cd_=np.zeros((k,k,2))):
     """
     calculate the circulating flux and assign its height/thickness
     
@@ -145,12 +150,19 @@ def circ_flux(W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz):
         Thickness of circulation in gridspace
     dz_: int
         Thickness of one layer in meters
+    w_ : float(2)
+        Mean wind velocity of lowest 1000 m of atmosphere
+    cd_: float(k,k,2)
+        Directionality of connection between two columns; x,y
 
     Returns
     -------
     float(k,k,nz)
         Flux from k1 to k2. (+) is net flux out of k1 
-    
+    float
+        The velocity of the circulation
+    float
+        The base height of the circulation
     """
     
     # add the filter to make it smoother (beta)
@@ -158,6 +170,7 @@ def circ_flux(W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz):
     b = 1.5
     adj = beta.pdf(np.linspace(beta.ppf(.001,a,b),beta.ppf(.999,a,b),dzi),a,b)
     adj =adj/np.sum(adj)*dzi
+    
 
     F = np.zeros((k,k,vpt.shape[1]))
     for k1 in range(k):
@@ -177,18 +190,29 @@ def circ_flux(W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz):
             
             T1m = np.mean(T[k1,0:dzi])
             T2m = np.mean(T[k2,0:dzi])
+            
             ur = np.abs(T1m-T2m)/T0*9.81**(.5)*l**(.5)
             
+            # adjust for velocity of mean wind
+            if (w_[0]==0) and (w_[1]==0):
+                pass
+            else:
+                circ_dir=cd_[k_low,k_hi,:]
+                flow=circ_dir/np.sqrt(circ_dir[0]**2+circ_dir[1]**2)*ur
+                adj_flow = np.abs(flow)-np.abs(w_)
+                if adj_flow[0]<0:
+                    adj_flow[0]=0
+                if adj_flow[1]<0:
+                    adj_flow[1]=0
+                ur=np.sqrt(adj_flow[0]**2+adj_flow[1]**2)
+
+            # compute the flux
             F[k1,k2,0:dzi] = c_*W[k1,k2]*dz_*ur*np.mean(lam[k_low,0:dzi])\
                              /(V[k_hi])*sgn*adj
             F[k1,k2,minz:minz+dzi] = -c_*W[k1,k2]*dz_*ur*\
                            np.mean(lam[k_hi,minz:minz+dzi])/(V[k_hi])*sgn*adj+\
                            F[k1,k2,minz:minz+dzi]
-    #print(F)
-    #print(V)
-    #print(W)
-    #print()
-    return F
+    return F,ur,minz
 
 
 #### FIND NEAREST VALUE IN AN ARRAY ####
@@ -369,7 +393,7 @@ def estimate_l_het(l_het,Hg_,cut=.25,samp=10000):
         v_p = v_/(u_**2+v_**2)**(1/2)
         
         # select half the points; compute mu
-        idx = np.random.choice(len(H_flat),size=samp*10,replace=False)
+        idx = np.random.choice(len(H_flat),size=int(round(len(H_flat)/2)),replace=False)
         mu = np.mean(H_flat[idx])
 
         # x heterogeneity
@@ -632,8 +656,8 @@ nt     = int((endt-stdt).seconds/3600)+1
 Hg,Hv   = read_sfc_data('sh',nt,stdt)
 Lg,Lv   = read_sfc_data('lh',nt,stdt)
 lwg,lwv  = read_sfc_data('lw',nt,stdt)
-lon_g,lonv = read_sfc_data('',1,stdt,sfc_dir+'jsslongrid_02')
-lat_g,latv = read_sfc_data('',1,stdt,sfc_dir+'jsslatgrid_02')
+#lon_g,lonv = read_sfc_data('',1,stdt,sfc_dir+'jsslongrid_02')
+#lat_g,latv = read_sfc_data('',1,stdt,sfc_dir+'jsslatgrid_02')
 Tsfcv = (lwv/(5.67*10**(-8)))**(1/4)
 Tsfcg = (lwg/(5.67*10**(-8)))**(1/4)
 
@@ -646,6 +670,7 @@ for i in list(range(k)):
     subprocess.run('python create_arm_data_cpl.py',shell=True)
     os.chdir(dir_old)
 
+print('...Calculate Lengthscale of Heterogeneity',flush=True)
 # Calculate Lengthscale of Heterogeneity
 Hgg = Hg[hggt,:,:]
 l_het = estimate_l_het(l_het,Hgg)
@@ -761,21 +786,26 @@ fp['frac'][:]=np.array(clst_frac)[:]
 
 # compute the width of the connecting surface 
 W = np.zeros((k,k))
+cdirect = np.zeros((k,k,2))
 for i in range(nx):
     for j in range(nx):
         cl = int(clst_2d[0,i,j])
         if i>0:
             cl_2 = int(clst_2d[0,i-1,j])
             W[cl,cl_2]=W[cl,cl_2]+dx
+            cdirect[cl,cl_2,1]=cdirect[cl,cl_2,1]+1
         if i<(nx-1):
             cl_2 = int(clst_2d[0,i+1,j])
             W[cl,cl_2]=W[cl,cl_2]+dx
+            cdirect[cl,cl_2,1]=cdirect[cl,cl_2,1]-1
         if j>0:
             cl_2 = int(clst_2d[0,i,j-1])
             W[cl,cl_2]=W[cl,cl_2]+dx
+            cdirect[cl,cl_2,0]=cdirect[cl,cl_2,0]-1
         if j<(nx-1):
             cl_2 = int(clst_2d[0,i,j+1])
             W[cl,cl_2]=W[cl,cl_2]+dx
+            cdirect[cl,cl_2,0]=cdirect[cl,cl_2,0]+1
 fp['W'][:] = W[:]
 
 # compute the sensible heat flux of each cluster
@@ -840,7 +870,6 @@ fp.write('nx      = '+str(nx)+' # number of gridcells in each direction\n')
 fp.write('dx      = '+str(dx)+' # surface grid resolution\n')
 fp.write('dz      = '+str(dz)+' # vertical grid resolution\n')
 fp.write('zmax    = '+str(zmax)+' # maximum height in clubb\n')
-fp.write('z_r     = '+str(z_r)+' # height where we switch sign of circ flux\n')
 fp.write('dzc     = '+str(dzc)+' # thickness of circulation if no z_r used\n')
 fp.write('stdate  = '+str(stdate)+' # start date\n')
 fp.write('enddate = '+str(enddate)+' # end date\n')
@@ -870,6 +899,10 @@ for i in range(1,k+1):
             data2[var][t,:]=np.interp(pres_newfrc,pres_frc[2,:][::-1],frcs_i[var][t,:][::-1])
     write_forcings(data2,m_dir+'/c_'+str(i)+'/input/case_setups/arm_forcings.in')
 
+# Initialize circulation output variables
+u_r = np.zeros((len(tlist),))
+z_circ = np.zeros((len(tlist),))
+
 # read in forcings
 for i in range(1,k+1):
     frc_file = m_dir+'/c_'+str(i)+'/input/case_setups/arm_forcings.in'
@@ -881,6 +914,7 @@ for i in range(1,len(tlist)):
     rtms = np.zeros((k,nz))
     thlm = np.zeros((k,nz))
     thvm = np.zeros((k,nz))
+    um   = [0,0]
 
     # Load in the temperature and mixing ratio
     for j in range(1,k+1):
@@ -889,17 +923,25 @@ for i in range(1,len(tlist)):
         rtms[j-1,:]=fp['rtm'][int(round(n_rest-1)),:,0,0]
         thlm[j-1,:]=fp['thlm'][int(round(n_rest-1)),:,0,0]
         thvm[j-1,:]=fp['thvm'][int(round(n_rest-1)),:,0,0]
-        fp.close()
+        
+    # load in windspeed
+    if wind_cr:
+        um[0]=np.mean(fp['um'][int(round(n_rest-1)),0:25,0,0])
+        um[1]=np.mean(fp['vm'][int(round(n_rest-1)),0:25,0,0])
+
+    fp.close()
 
     # check if there is surface heating; if no surface heating no flux
     doflux = True
-    if frcs[1]['T_f[K\s]'][i,0]<0:
+    if (frcs[1]['T_f[K\s]'][i,0]<0) or not flux_on:
         doflux=False
 
     # compute and define fluxes
     if doflux:
-        F_T = circ_flux(W,thlm,tmps,c_t,H2[i,:],V,thvm)
-        F_r = circ_flux(W,thlm,rtms,c_r,H2[i,:],V,thvm)
+        F_T,u_r[i],z_circ[i] = circ_flux(W,thlm,tmps,c_t,H2[i,:],V,thvm,\
+                                         l=l_het,w_=um,cd_=cdirect)
+        F_r = circ_flux(W,thlm,rtms,c_r,H2[i,:],V,thvm,l=l_het,\
+                        w_=um,cd_=cdirect)[0]
 
     for j in list(range(1,k+1)):
         frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
@@ -962,16 +1004,20 @@ for i in range(1,len(tlist)):
         subprocess.run(cmd,shell=True,stdout=subprocess.DEVNULL)
         print('RUN COMPLETE: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
 
-#### OUTPUT FINAL FORCING ####
+#### OUTPUT ####
+# Output Final forcings
 for j in list(range(1,k+1)):
-    write_forcings(frcs[j],w_dir+'arm_forcings_f.in')
+    write_forcings(frcs[j],w_dir+'/k_'+str(k)+'/c_'+str(j)+'/arm_forcings_f.in')
 
+# output circulation characteristics
+fp=nc.Dataset(w_dir+'/k_'+str(k)+'/clusters.nc','r+')
+fp.createDimension('t_model',size=len(tlist))
+fp.createVariable('t_model','d',dimensions=('t_model'))
+fp.createVariable('u_r','d',dimensions=('t_model'))
+fp.createVariable('z_circ','d',dimensions=('t_model'))
+fp['u_r'][:]=u_r[:]
+fp['z_circ'][:]=z_circ[:]*dz
 
-# ---------- #
-# AGG OUTPUT #
-# ---------- #
-# temporally aggregate small output files
-# then do traditional output aggregation
 
 
         
