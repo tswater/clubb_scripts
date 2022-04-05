@@ -24,8 +24,8 @@ n_rest     = 5 # number of timesteps between restart
 delta_t    = 60 # in seconds, for CLUBB  ## DOES NOT CHANGE MODEL VALUE
 dsmooth    = 5 # number of levels over which to switch sign of circ flux
 T0         = 300 # reference temperature; matched to CLUBB
-c_r        = .00125 # factor for moisture fluxes
-c_t        = .0000625 # factor for temperature fluxes
+c_r        = .0016*2 # factor for moisture fluxes
+c_t        = .0000780*2 # factor for temperature fluxes
 hggt       = 2 # hours after start to use surface as basis for l_het
 
 # directories
@@ -199,7 +199,7 @@ def circ_flux(W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz,w_=[0,0],cd_=n
             else:
                 circ_dir=cd_[k_low,k_hi,:]
                 flow=circ_dir/np.sqrt(circ_dir[0]**2+circ_dir[1]**2)*ur
-                adj_flow = np.abs(flow)-np.abs(w_)
+                adj_flow = np.abs(flow)-np.abs(w_)*.66
                 if adj_flow[0]<0:
                     adj_flow[0]=0
                 if adj_flow[1]<0:
@@ -511,10 +511,14 @@ def estimate_l_het(l_het,Hg_,cut=.25,samp=10000):
             alpha = (u_p-beta*b_i)/a_i
         else:
             beta  = (u_p*a_j-v_p*a_i)/(b_i-b_j*a_i)
-            alpha = (v_p-beta*b_j)/a_j
-        
+            alpha = (v_p-beta*b_j)/a_j 
         
         l_het_=alpha*l_het_a+beta*l_het_b
+        if l_het_<0:
+            print('ERROR POSSIBLE IN HETEROGENEITY')
+            print('ERROR POSSIBLE IN HETEROGENEITY')
+            print('TAG:NEGATIVE_HET')
+            l_het_=np.abs(l_het_)
         
         print('Heterogeneity in direction x:'+str(u_p)+'  y:'+str(v_p))
         print(l_het_)
@@ -924,12 +928,12 @@ for i in range(1,len(tlist)):
         thlm[j-1,:]=fp['thlm'][int(round(n_rest-1)),:,0,0]
         thvm[j-1,:]=fp['thvm'][int(round(n_rest-1)),:,0,0]
         
-    # load in windspeed
-    if wind_cr:
-        um[0]=np.mean(fp['um'][int(round(n_rest-1)),0:25,0,0])
-        um[1]=np.mean(fp['vm'][int(round(n_rest-1)),0:25,0,0])
+        # load in windspeed
+        if wind_cr:
+            um[0]=np.mean(fp['um'][int(round(n_rest-1)),0:25,0,0])
+            um[1]=np.mean(fp['vm'][int(round(n_rest-1)),0:25,0,0])
 
-    fp.close()
+        fp.close()
 
     # check if there is surface heating; if no surface heating no flux
     doflux = True
