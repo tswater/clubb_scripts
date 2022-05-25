@@ -1,14 +1,21 @@
 import xarray as xr
 import datetime
 import numpy as np
+import argparse
 
 # ----------- #
 # USER INPUTS #
 # ----------- #
-in_file = '/home/tsw35/soteria/clubb/data/sgo60varanarap.nc' #input data
+in_file = '/home/tsw35/soteria/clubb/data/sgp60varanarap_2012-2019.nc' #input data
 model_file = '../../original_arm_model.in' # input file for temporal data
 out_dir = '../input/case_setups/' #output location
 
+#### ARG PARSER ####
+prs = argparse.ArgumentParser(description='Short sample app')
+prs.add_argument('-a', action='store', dest='atm', default=model_file)
+
+args     = prs.parse_args()
+model_file = args.atm
 
 # --------- #
 # FUNCTIONS #

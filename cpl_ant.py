@@ -13,6 +13,7 @@ import sklearn.cluster
 import netCDF4 as nc
 import shutil
 from scipy.stats import beta
+from inspect import currentframe, getframeinfo
 
 # ------------------------- #
 # USER INPUTS and CONSTANTS #
@@ -20,26 +21,29 @@ from scipy.stats import beta
 
 #### CONSTANTS ####
 # run options
-n_rest     = 5 # number of timesteps between restart
-delta_t    = 60 # in seconds, for CLUBB  ## DOES NOT CHANGE MODEL VALUE
-dsmooth    = 5 # number of levels over which to switch sign of circ flux
-T0         = 300 # reference temperature; matched to CLUBB
-c_r        = .0016*2 # factor for moisture fluxes
-c_t        = .0000780*2 # factor for temperature fluxes
-hggt       = 2 # hours after start to use surface as basis for l_het
+s_rest      = 300 # number of seconds between restarts
+delta_t     = .5
+dsmooth     = 5 # number of levels over which to switch sign of circ flux
+T0          = 300 # reference temperature; matched to CLUBB
+c_rat       = 20 # ratio of moisture to temperature factor
+c_t         = .00025 # factor for temperature fluxes
+hggt        = 2 # hours after start to use surface as basis for l_het
+no_wind_frc = True
 
 # directories
 sfc_dir   = '/stor/soteria/hydro/shared/sgp_surfaces/dx0100nx1000/'
 clubb_dir = '/home/tsw35/tyche/clubb/' # directory of clubb run folders
 blank_run = '/home/tsw35/soteria/clubb/clubb_scripts/run_/' # a clean run folder to copy
 cbin_dir  = '/home/tsw35/soteria/software/CLUBB/bin/' # bin for clubb
+tune_o    = '/home/tsw35/soteria/clubb/clubb_scripts/tunable_param/g0.4c110.4c80.5' 
+            # 'X' overwrite tunable parameters
 
 #### DEFAULTS ####
 k       = 1 # number of clusters
 nx      = 1000 # number of gridcells in each direction
 dx      = 100  # resolution of surface grid in meters
 dz      = 40 # dz
-zmax    = 10000
+zmax    = 12000
 dzc     = 1000
 nz      = int(np.floor(zmax/dz)+1)
 stdate  = '2017-07-16T12:00:00.000'# start date iso format
@@ -49,7 +53,8 @@ l_het   = -2 # Length of heterog. in meters; -1: calculate, -2: || to wind
 c_7     = -1 # default is non constant (-1), bouancy term, .3 to .8 is listed range
 flux_on = 1 # turn on cirrculation flux (1) turn off (0)
 wind_cr = 1 # turn on directional wind corrections to flux (1) turn off (0)
-
+cut_off= .8 # cuttoff for correlation function heterogeneity
+              # lowering increases the velocity of circulation
 
 #### PARSE ####
 
@@ -63,11 +68,15 @@ prs.add_argument('-s', action='store', dest='start', default=stdate)
 prs.add_argument('-e', action='store', dest='end',default=enddate)
 prs.add_argument('-c', action='store', dest='sfc',default=sfc_dir)
 prs.add_argument('-l', action='store', dest='l_het',type=int,default=l_het)
-prs.add_argument('-r', action='store', dest='c_r',type=float,default=c_r)
+prs.add_argument('-r', action='store', dest='c_rat',type=float,default=c_rat)
 prs.add_argument('-t', action='store', dest='c_t',type=float,default=c_t)
 prs.add_argument('-v', action='store', dest='c_7',type=float,default=c_7)
 prs.add_argument('-f', action='store', dest='flux',type=int,default=flux_on)
 prs.add_argument('-w', action='store', dest='wc',type=int,default=wind_cr)
+prs.add_argument('-y', action='store', dest='dt',type=float,default=delta_t)
+prs.add_argument('-o', action='store', dest='tun',default=tune_o)
+prs.add_argument('-u', action='store', dest='cut',type=float,default=cut_off)
+prs.add_argument('-a', action='store', dest='atm',default='')
 
 args = prs.parse_args()
 
@@ -80,15 +89,20 @@ enddate = args.end
 dirname = args.dir
 sfc_dir = args.sfc
 l_het   = args.l_het
-c_r     = args.c_r
+c_rat   = args.c_rat
 c_t     = args.c_t
+c_r     = c_t*c_rat
 c_7     = args.c_7
 flux_on = args.flux==1
 wind_cr = args.wc==1
+delta_t = args.dt
+tune_o  = args.tun #overwrite tunable param w/ other file
+cut_off = args.cut
+atm_dir = args.atm
 
 #### EXTRAS ####
 dzi = int(np.floor(dzc/dz))
-
+n_rest = int(np.floor(s_rest/delta_t)) # number of timesteps between restart
 if k == 1:
     flux_on = False
 
@@ -197,6 +211,8 @@ def circ_flux(W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz,w_=[0,0],cd_=n
             if (w_[0]==0) and (w_[1]==0):
                 pass
             else:
+                # have mean wind reduce circulation velocity
+                '''
                 circ_dir=cd_[k_low,k_hi,:]
                 flow=circ_dir/np.sqrt(circ_dir[0]**2+circ_dir[1]**2)*ur
                 adj_flow = np.abs(flow)-np.abs(w_)*.66
@@ -205,6 +221,13 @@ def circ_flux(W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz,w_=[0,0],cd_=n
                 if adj_flow[1]<0:
                     adj_flow[1]=0
                 ur=np.sqrt(adj_flow[0]**2+adj_flow[1]**2)
+                '''
+
+                # take circulation velocity component perp to wind
+                circ_dir=cd_[k_low,k_hi,:]
+                flow=circ_dir/np.sqrt(circ_dir[0]**2+circ_dir[1]**2)*ur
+                adj_flow = flow-np.dot(np.dot(flow,w_)/np.dot(w_,w_),w_)
+                ur=np.sqrt(adj_flow[0]**2+adj_flow[1]**2)
 
             # compute the flux
             F[k1,k2,0:dzi] = c_*W[k1,k2]*dz_*ur*np.mean(lam[k_low,0:dzi])\
@@ -212,7 +235,8 @@ def circ_flux(W,T,lam,c_,H,V,vpt,k=k,T0=T0,l=l_het,dzi=dzi,dz_=dz,w_=[0,0],cd_=n
             F[k1,k2,minz:minz+dzi] = -c_*W[k1,k2]*dz_*ur*\
                            np.mean(lam[k_hi,minz:minz+dzi])/(V[k_hi])*sgn*adj+\
                            F[k1,k2,minz:minz+dzi]
-    return F,ur,minz
+    xfac=np.abs(np.mean(F[0,1,0:dzi]))
+    return F,ur,minz,xfac
 
 
 #### FIND NEAREST VALUE IN AN ARRAY ####
@@ -379,8 +403,13 @@ def estimate_l_het(l_het,Hg_,cut=.25,samp=10000):
             if line[0]=='z':
                 continue
             linesp = line.split(' ')
-            u_=float(linesp[3])
-            v_=float(linesp[4])
+            print(linesp)
+            ll=[]
+            for l_ in linesp:
+                if not l_=='':
+                    ll.append(l_)
+            u_=float(ll[3])
+            v_=float(ll[4])
             break
         fp.close()
         
@@ -578,6 +607,18 @@ for line in fp:
         fln = 'time_final = '+str(tf0).ljust(11)+\
               '! Model end time [seconds since midnight UTC on start date]'
         lines.append(fln+'\n')
+    elif line[0:7]=='dt_main':
+        dtln= 'dt_main = '+str(delta_t)+' ! Model timestep [s]'
+        lines.append(dtln+'\n')
+    elif line[0:6]=='dt_rad':
+        dtln= 'dt_rad = '+str(delta_t)+' ! Model timestep [s]'
+        lines.append(dtln+'\n')
+    elif line[0:10]=='stats_tout':
+        dtln= 'stats_tout = '+str(max(60,delta_t))+' ! Statistical Sampling Timestep [s]'
+        lines.append(dtln+'\n')
+    elif line[0:11]=='stats_tsamp':
+        dtln= 'stats_tsamp = '+str(delta_t)+' ! Statistical Sampling Timestep [s]'
+        lines.append(dtln+'\n')
     elif line[0:6]=='deltaz':
         dzline = 'deltaz  = '+str(dz)+'   ! Distance between grid levels on'+\
                  ' evenly-spaced grid.      [m]'
@@ -612,6 +653,8 @@ for line in lines:
 fp.close()
 
 # Fix tunable parameters, if necessary
+if not (tune_o == 'X'):
+    subprocess.run('cp '+tune_o+' '+m_dir+'/c_1/input/tunable_parameters.in',shell=True)
 if c_7 == -1:
     pass
 else:
@@ -671,13 +714,16 @@ print('WRITE SURFACE FILES',flush=True)
 for i in list(range(k)):
     dir_old = os.getcwd()
     os.chdir(w_dir+'/k_'+str(k)+'/c_'+str(i+1)+'/other_scripts')
-    subprocess.run('python create_arm_data_cpl.py',shell=True)
+    if atm_dir=='':
+        subprocess.run('python create_arm_data_cpl.py',shell=True)
+    else:
+        subprocess.run('python create_arm_data_cpl.py -a '+atm_dir,shell=True)
     os.chdir(dir_old)
 
 print('...Calculate Lengthscale of Heterogeneity',flush=True)
 # Calculate Lengthscale of Heterogeneity
 Hgg = Hg[hggt,:,:]
-l_het = estimate_l_het(l_het,Hgg)
+l_het = estimate_l_het(l_het,Hgg,cut=cut_off)
 
 # extend arm_forcing.in
 nz_forcing = 37 #number of levels in original forcing file
@@ -693,6 +739,8 @@ for j in list(range(1,k+1)):
     for d in data.keys():
         if d == 'time':
             data2[d]=times_frc
+        elif (d == 'vm_ref[m\s]') or (d == 'omega[Pa\s]') or (d == 'um_ref[m\s]') and no_wind_frc:
+            data2[d]=np.ones((int(nt_frc),nz_forcing))*-999.9
         else:
             data2[d]=np.zeros((int(nt_frc),nz_forcing))
             for l in range(nz_forcing):
@@ -904,8 +952,9 @@ for i in range(1,k+1):
     write_forcings(data2,m_dir+'/c_'+str(i)+'/input/case_setups/arm_forcings.in')
 
 # Initialize circulation output variables
-u_r = np.zeros((len(tlist),))
-z_circ = np.zeros((len(tlist),))
+u_r = np.ones((len(tlist),))*-1
+z_circ = np.ones((len(tlist),))*-1
+fpow = np.ones((len(tlist),))*-1
 
 # read in forcings
 for i in range(1,k+1):
@@ -920,20 +969,30 @@ for i in range(1,len(tlist)):
     thvm = np.zeros((k,nz))
     um   = [0,0]
 
-    # Load in the temperature and mixing ratio
-    for j in range(1,k+1):
-        fp = nc.Dataset(m_dir+'/c_'+str(j)+'/output/arm_zt.nc','r')
-        tmps[j-1,:]=fp['T_in_K'][int(round(n_rest-1)),:,0,0]
-        rtms[j-1,:]=fp['rtm'][int(round(n_rest-1)),:,0,0]
-        thlm[j-1,:]=fp['thlm'][int(round(n_rest-1)),:,0,0]
-        thvm[j-1,:]=fp['thvm'][int(round(n_rest-1)),:,0,0]
+    try:
+        # Load in the temperature and mixing ratio
+        n_rest_out=int(np.floor(s_rest/max(60,delta_t)))
+        for j in range(1,k+1):
+            fp = nc.Dataset(m_dir+'/c_'+str(j)+'/output/arm_zt.nc','r')
+            tmps[j-1,:]=fp['T_in_K'][int(round(n_rest_out-1)),:,0,0]
+            rtms[j-1,:]=fp['rtm'][int(round(n_rest_out-1)),:,0,0]
+            thlm[j-1,:]=fp['thlm'][int(round(n_rest_out-1)),:,0,0]
+            thvm[j-1,:]=fp['thvm'][int(round(n_rest_out-1)),:,0,0]
         
-        # load in windspeed
-        if wind_cr:
-            um[0]=np.mean(fp['um'][int(round(n_rest-1)),0:25,0,0])
-            um[1]=np.mean(fp['vm'][int(round(n_rest-1)),0:25,0,0])
+            # load in windspeed
+            if wind_cr:
+                um[0]=np.mean(fp['um'][int(round(n_rest_out-1)),0:25,0,0])
+                um[1]=np.mean(fp['vm'][int(round(n_rest_out-1)),0:25,0,0])
 
-        fp.close()
+            fp.close()
+    except KeyboardInterrupt:
+        sys.exit()
+        pass
+    except Exception as e:
+        print(e)
+        frameinfo = getframeinfo(currentframe())
+        print(frameinfo.filename, frameinfo.lineno)
+        break
 
     # check if there is surface heating; if no surface heating no flux
     doflux = True
@@ -942,7 +1001,7 @@ for i in range(1,len(tlist)):
 
     # compute and define fluxes
     if doflux:
-        F_T,u_r[i],z_circ[i] = circ_flux(W,thlm,tmps,c_t,H2[i,:],V,thvm,\
+        F_T,u_r[i],z_circ[i],fpow[i] = circ_flux(W,thlm,tmps,c_t,H2[i,:],V,thvm,\
                                          l=l_het,w_=um,cd_=cdirect)
         F_r = circ_flux(W,thlm,rtms,c_r,H2[i,:],V,thvm,l=l_het,\
                         w_=um,cd_=cdirect)[0]
@@ -1005,7 +1064,12 @@ for i in range(1,len(tlist)):
         cmd = rfile+' arm -p '+cbasedir+'/input/tunable_parameters.in'
         
         print('STARTING RUN: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
-        subprocess.run(cmd,shell=True,stdout=subprocess.DEVNULL)
+        try:
+            subprocess.run(cmd,shell=True,stdout=subprocess.DEVNULL)
+        except Exception as e:
+            print('ERROR RUN FAILED')
+            print(e)
+            break
         print('RUN COMPLETE: '+str(j)+' at time '+str(t0)+' with process '+str(0),flush=True)
 
 #### OUTPUT ####
@@ -1015,14 +1079,17 @@ for j in list(range(1,k+1)):
 
 # output circulation characteristics
 fp=nc.Dataset(w_dir+'/k_'+str(k)+'/clusters.nc','r+')
+fp.createDimension('xy',size=2)
 fp.createDimension('t_model',size=len(tlist))
 fp.createVariable('t_model','d',dimensions=('t_model'))
 fp.createVariable('u_r','d',dimensions=('t_model'))
 fp.createVariable('z_circ','d',dimensions=('t_model'))
+fp.createVariable('flux_power','d',dimensions=('t_model'))
+fp.createVariable('flow_dir','d',dimensions=('clst','clst','xy'))
 fp['u_r'][:]=u_r[:]
+fp['flux_power'][:]=fpow[:]
 fp['z_circ'][:]=z_circ[:]*dz
-
-
+fp['flow_dir'][:]=cdirect[:]
 
         
 

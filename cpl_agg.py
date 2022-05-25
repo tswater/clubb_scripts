@@ -8,11 +8,11 @@ import argparse
 # ----------- #
 main_dir = '/home/tsw35/tyche/clubb/test_cpl7/'
 force_agg = True
-dt = 60 #FIXME should get from arm_model.in
+dt = 60
 out_var = {'zm': {'latitude':[],'longitude':[],'altitude':[],'time':[],\
                   'thlp2_ta':[],'thlp2_tp':[],'thlp2_dp1':[],'thlp2_dp2':[],\
                   'thlp2_ma':[],'thlp2_forcing':[],'thlp2':[],'wp2':[],'up2':[],\
-                  'vp2':[],'Richardson_num':[]},\
+                  'vp2':[],'Richardson_num':[],'bv_freq_sqd':[]},\
         'zt': {'latitude':[],'longitude':[],'altitude':[],'time':[],'thlm':[],\
                   'um':[],'vm':[],'p_in_Pa':[],'rtm':[],'T_in_K':[],'thvm':[],\
                   'ug':[],'vg':[],'wm':[],'cloud_cover':[],'rho':[]},\
@@ -26,6 +26,14 @@ prs = argparse.ArgumentParser(description='Short sample app')
 prs.add_argument('-i', action='store', dest='dirct', default=main_dir)
 args = prs.parse_args()
 main_dir = args.dirct
+
+
+# ---------------- #
+# HELPER FUNCTIONS #
+# ---------------- #
+
+
+
 
 
 
@@ -61,7 +69,7 @@ for kfile in os.listdir(main_dir):
                     num = int(sp2[0])
                     if num > n_rst:
                         n_rst = num
-# get initial and final time
+# get initial and final time and dt
 fp = open(main_dir+'k_'+str(ks[len(ks)-1])+'/c_1/input/arm_model.in','r')
 for line in fp.readlines():
     if line[0:12]=='time_initial':
@@ -72,7 +80,10 @@ for line in fp.readlines():
         lp = line.split(' ')
         lp = [x for x in lp if x !='']
         t_final = float(lp[2])
-
+    elif line[0:7]=='dt_main':
+        lp = line.split(' ')
+        lp = [x for x in lp if x !='']
+        dt = float(lp[2])
 
 print(n_rst)
 print(ks)
