@@ -35,8 +35,10 @@ sfc_dir   = '/stor/soteria/hydro/shared/sgp_surfaces/dx0100nx1000/'
 clubb_dir = '/home/tsw35/tyche/clubb/' # directory of clubb run folders
 blank_run = '/home/tsw35/soteria/clubb/clubb_scripts/run_/' # a clean run folder to copy
 cbin_dir  = '/home/tsw35/soteria/software/CLUBB/bin/' # bin for clubb
+met_dir   = '/home/tsw35/soteria/clubb/data/sgp60varanarap_2012-2019.nc' #forcing
 tune_o    = '/home/tsw35/soteria/clubb/clubb_scripts/tunable_param/g0.4c110.4c80.5' 
             # 'X' overwrite tunable parameters
+
 
 #### DEFAULTS ####
 k       = 1 # number of clusters
@@ -106,6 +108,8 @@ n_rest = int(np.floor(s_rest/delta_t)) # number of timesteps between restart
 if k == 1:
     flux_on = False
 
+
+##############################################################################
 
 # ---------------- #
 # HELPER FUNCITONS #
@@ -720,6 +724,13 @@ for i in list(range(k)):
         subprocess.run('python create_arm_data_cpl.py -a '+atm_dir,shell=True)
     os.chdir(dir_old)
 
+# pull in the sw down
+t0_var = datetime.datetime(2012,5,1,0,0)
+fp_sw=nc.Dataset(met_dir,'r')
+swt_init =int(((stdt-t0_var).total_seconds()/3600+1)) #initial time to read
+swt_final=int(((endt-t0_var).total_seconds()/3600+1)) #final time to read
+sw_dwn =fp_sw['sw_dn_srf'][swt_init:swt_final]
+
 print('...Calculate Lengthscale of Heterogeneity',flush=True)
 # Calculate Lengthscale of Heterogeneity
 Hgg = Hg[hggt,:,:]
@@ -880,6 +891,24 @@ V = clst_frac*dz*nx*nx*dx*dx
 # timestep list
 tlist = list(range(int(t_init),int(t_final),int(round(delta_t*n_rest))))
 
+#interpolate shortwave down
+tlistsw=list(range(int(t_init),int(t_final),3600))
+sw_dwn_interp = np.interp(tlist,tlistsw,sw_dwn)
+
+# create an array of flux activation w/ 1 active, 0 inactive, between is decay
+min_rad = 200
+fluxbool=np.zeros((len(sw_dwn_interp),))
+fluxbool[sw_dwn_interp>min_rad]=1
+# change boolean to decay setup
+doflux=[0]
+for i in range(1,len(fluxbool)):
+    prev=doflux[i-1]
+    if (prev<.99)&(fluxbool[i]==1):
+        doflux.append(prev+.1667)
+    elif (prev>.01)&(fluxbool[i]==0):
+        doflux.append(prev-.1667)
+
+# patches 
 H2 = np.zeros((len(tlist),k))
 tss = []
 for t in range(nt):
@@ -993,23 +1022,20 @@ for i in range(1,len(tlist)):
         frameinfo = getframeinfo(currentframe())
         print(frameinfo.filename, frameinfo.lineno)
         break
-
-    # check if there is surface heating; if no surface heating no flux
-    doflux = True
-    if (frcs[1]['T_f[K\s]'][i,0]<0) or not flux_on:
-        doflux=False
+    
+    #depricated flux controller (doflux) was once here
 
     # compute and define fluxes
-    if doflux:
-        F_T,u_r[i],z_circ[i],fpow[i] = circ_flux(W,thlm,tmps,c_t,H2[i,:],V,thvm,\
+    if doflux[i]>.01:
+        F_T,u_r[i],z_circ[i],fpow[i] = circ_flux(W,thlm,tmps,c_t*doflux[i],H2[i,:],V,thvm,\
                                          l=l_het,w_=um,cd_=cdirect)
-        F_r = circ_flux(W,thlm,rtms,c_r,H2[i,:],V,thvm,l=l_het,\
+        F_r = circ_flux(W,thlm,rtms,c_r*doflux[i],H2[i,:],V,thvm,l=l_het,\
                         w_=um,cd_=cdirect)[0]
 
     for j in list(range(1,k+1)):
         frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
         
-        if doflux:
+        if doflux[i]>.01:
             # Change Flux to forcings
             frcs[j]['T_f[K\s]'][i,:]=frcs[j]['T_f[K\s]'][i,:]-\
                                    np.sum(F_T[j-1,:,:],axis=0)
