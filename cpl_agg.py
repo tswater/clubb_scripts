@@ -6,13 +6,14 @@ import argparse
 # ----------- #
 # USER INPUTS #
 # ----------- #
-main_dir = '/home/tsw35/tyche/clubb/test_cpl7/'
+main_dir = '/home/tsw35/tyche/clubb/test_cpl6_nocpl/'
 force_agg = True
 dt = 60
 out_var = {'zm': {'latitude':[],'longitude':[],'altitude':[],'time':[],\
                   'thlp2_ta':[],'thlp2_tp':[],'thlp2_dp1':[],'thlp2_dp2':[],\
                   'thlp2_ma':[],'thlp2_forcing':[],'thlp2':[],'wp2':[],'up2':[],\
-                  'vp2':[],'Richardson_num':[],'bv_freq_sqd':[]},\
+                  'vp2':[],'Richardson_num':[],'bv_freq_sqd':[],'wprtp':[],\
+                  'wpthlp':[]},\
         'zt': {'latitude':[],'longitude':[],'altitude':[],'time':[],'thlm':[],\
                   'um':[],'vm':[],'p_in_Pa':[],'rtm':[],'T_in_K':[],'thvm':[],\
                   'ug':[],'vg':[],'wm':[],'cloud_cover':[],'rho':[]},\
