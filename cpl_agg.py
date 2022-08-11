@@ -6,7 +6,7 @@ import argparse
 # ----------- #
 # USER INPUTS #
 # ----------- #
-main_dir = '/home/tsw35/tyche/clubb/test_cpl6_nocpl/'
+main_dir = '/home/tsw35/tyche/clubb/test_cpl2/'
 force_agg = True
 dt = 60
 out_var = {'zm': {'latitude':[],'longitude':[],'altitude':[],'time':[],\
