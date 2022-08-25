@@ -16,7 +16,7 @@ size = comm.Get_size()
 # USER INPUTS #
 # ----------- #
 clubb_dir='/home/tsw35/tyche/clubb/'
-search_dirs=['circ_tune']
+search_dirs=['circ_tune2d']
 sd=[]
 for file in search_dirs:
     sd.append(clubb_dir+file)
@@ -66,8 +66,11 @@ i=0
 for k_folder in k_dirs[rank::size]:
     print('RANK: '+str(rank)+'  '+str(i)+'/'+str(len(k_dirs)/size),flush=True)
     if (k_folder[-1]=='2'):
-        fp1=nc.Dataset(k_folder+'/c_1/output/arm_zm.nc','r')
-        fp2=nc.Dataset(k_folder+'/c_2/output/arm_zm.nc','r')
+        try:
+            fp1=nc.Dataset(k_folder+'/c_1/output/arm_zm.nc','r')
+            fp2=nc.Dataset(k_folder+'/c_2/output/arm_zm.nc','r')
+        except:
+            continue
         blh_1=calc_blh(fp1['Richardson_num'][:,:,0,0],fp1['altitude'][:])
         blh_2=calc_blh(fp2['Richardson_num'][:,:,0,0],fp2['altitude'][:])
         fp1.close()
@@ -95,7 +98,10 @@ for k_folder in k_dirs[rank::size]:
         fp3['blh'][:]=(blh_1[:]+blh_2[:])/2
         fp3.close()
     elif (k_folder[-1]=='1'):
-        fp1=nc.Dataset(k_folder+'/c_1/output/arm_zm.nc','r')
+        try:
+            fp1=nc.Dataset(k_folder+'/c_1/output/arm_zm.nc','r')
+        except:
+            continue
         blh_1=calc_blh(fp1['Richardson_num'][:,:,0,0],fp1['altitude'][:])
         fp1.close()
         fp1=nc.Dataset(k_folder+'/c_1/output/arm_sfc.nc','r+')

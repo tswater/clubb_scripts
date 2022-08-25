@@ -16,7 +16,9 @@ out_var = {'zm': {'latitude':[],'longitude':[],'altitude':[],'time':[],\
                   'wpthlp':[]},\
         'zt': {'latitude':[],'longitude':[],'altitude':[],'time':[],'thlm':[],\
                   'um':[],'vm':[],'p_in_Pa':[],'rtm':[],'T_in_K':[],'thvm':[],\
-                  'ug':[],'vg':[],'wm':[],'cloud_cover':[],'rho':[]},\
+                  'ug':[],'vg':[],'wm':[],'cloud_cover':[],'rho':[],'rcm':[],\
+                  'wp3':[],'thlp3':[],'rtp3':[],'wpthlp2':[],'wp2thlp':[],\
+                  'wprtp2':[],'wp2rtp':[],'Skw_zt':[]},\
         'sfc':{'latitude':[],'longitude':[],'altitude':[],'time':[],'sh':[],\
                'lh':[],'lwp':[],'ustar':[],'cc':[],'z_cloud_base':[],'T_sfc':[],\
                'z_inversion':[]}}
@@ -160,8 +162,8 @@ if rst_cpl:
 # ------------------ #
 print('Beginning cluster aggregation')
 if agg_clst or force_agg:
-    times = nc.Dataset(main_dir+'k_2/c_1/output/arm_zm.nc','r')['time'][:]
-    alts  = nc.Dataset(main_dir+'k_2/c_1/output/arm_zm.nc','r')['altitude'][:]
+    times = nc.Dataset(main_dir+'k_'+str(ks[0])+'/c_1/output/arm_zm.nc','r')['time'][:]
+    alts  = nc.Dataset(main_dir+'k_'+str(ks[0])+'/c_1/output/arm_zm.nc','r')['altitude'][:]
     for ki in ks:
         print('K: '+str(ki))
         ovar=copy.deepcopy(out_var)
