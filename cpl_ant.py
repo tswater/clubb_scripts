@@ -23,12 +23,13 @@ from inspect import currentframe, getframeinfo
 #### CONSTANTS ####
 # run options
 s_rest      = 300 # number of seconds between restarts
-decay_t     = 60*60 # number of seconds to full circulation power
+decay_t     = 60*120 # number of seconds to full circulation power
 delta_t     = 30
 T0          = 300 # reference temperature; matched to CLUBB
-c_ur        = .1
-hggt        = 4 # hours after start to use surface as basis for l_het
+hggt        = 6 # hours after start to use surface as basis for l_het
 vert_circ   = True # if true, will include vertical circulation
+no_tq_frc   = False # if true, will set thermal and moisture forcings to 0
+
 
 # directories
 sfc_dir   = '/home/tsw35/soteria/clubb/data/surfaces_5k/'
@@ -50,16 +51,27 @@ dzc     = 1000
 nz      = int(np.floor(zmax/dz)+1)
 stdate  = '2017-07-16T10:00:00.000'# start date iso format
 enddate = '2017-07-17T03:00:00.000'# end date iso format
-dirname = 'test_cpl2'
+dirname = 'test_cpl'
 c_ur    = 1
-c_ri    = 0.5 # -1 uses vpt method to calc circ height; otherwise is ri_b cuttoff
 no_wind_frc = False # if true, will ignore forcings for wind velocity
 l_het   = -2 # Length of heterog. in meters; -1: calculate, -2: || to wind
 c_7     = -1 # default is non constant (-1), bouancy term, .3 to .8 is listed range
 flux_on = 1 # turn on cirrculation flux (1) turn off (0)
 wind_cr = 1 # turn on directional wind corrections to flux (1) turn off (0)
+inc     = 1 # increase in vertical windspeed relative to what it should be by volume balance
 cut_off = .8 # cuttoff for correlation function heterogeneity
-              # lowering increases the velocity of circulation
+
+## CIRCULATION PARAMETERS ##
+# METHODS
+# ri     : this uses the richardson number to determine circulation height;
+#          in this case, cc1 is the richardson number cuttoff; cc1=.5
+# vpt1   : this is the old vpt case and is innacurate and depricated; c11=0
+# vpt2   : circulation is determined by cummulative value of gradient of vpt
+#          c11 is the cuttoff value; circulation top is this cuttoff in hot
+#          and circulation bottom is cuttoff in cold column.
+
+circ_m  = 'pa' # circulation method
+cc1     = 1 # has different meanings depending on the circulation method
 
 #### PARSE ####
 
@@ -81,6 +93,9 @@ prs.add_argument('-y', action='store', dest='dt',type=float,default=delta_t)
 prs.add_argument('-o', action='store', dest='tun',default=tune_o)
 prs.add_argument('-u', action='store', dest='cut',type=float,default=cut_off)
 prs.add_argument('-a', action='store', dest='atm',default='')
+prs.add_argument('-b', action='store', dest='inc',type=float,default=inc)
+prs.add_argument('-cm', action='store',dest='cm',default=circ_m)
+prs.add_argument('-c1', action='store',dest='cc1',type=float,default=cc1)
 
 args = prs.parse_args()
 
@@ -101,6 +116,9 @@ delta_t = args.dt
 tune_o  = args.tun #overwrite tunable param w/ other file
 cut_off = args.cut
 atm_dir = args.atm
+inc     = args.inc
+circ_m  = args.cm
+cc1     = args.cc1
 
 #### EXTRAS ####
 dzi = int(np.floor(dzc/dz))
@@ -144,8 +162,28 @@ def calc_blh(ri_,lim):
         pass
     return idx
 
+#### CLUSTER ####
+def cluster(var,nt_):
+    varn = normalize(var)
+    ctff=0
+    prev=np.percentile(varn,22.5)
+    diff=100
+    for i in np.linspace(25,75,21):
+        ctf=np.percentile(varn,i)
+        if (ctf-prev)<diff:
+            diff=ctf-prev
+            ctff=ctf
+        prev=ctf
+    Y=np.zeros((nx*nx))
+    Y[varn>=ctff]=1
+    k_masks=np.zeros((nt_,nx*nx))
+    for t in range(nt_):
+        k_masks[t,:]=Y[:]
+    return k_masks
+
+
 #### COMPUTE CIRCULATION TENDENCIES ####
-def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],cd_=[0,0],ri=-1):
+def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],cd_=[0,0],cc1=cc1,circ_m=circ_m,pa=None):
     """
     from the atmospheric profiles, calculate the tendencies in moisture and
     heat as well as the vertical velocity (w) profile necessary
@@ -179,6 +217,10 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
     cd_: float(2)
         2 component direction of circulation
     """
+    
+    if circ_m=='pa':
+        return circulate_pa(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=u_,cd_=cd_,cc1=cc1,circ_m=circ_m,pa=pa)
+    
     # create empty outputs
     nz_  = vpt.shape[1]
 
@@ -196,22 +238,56 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
         k_hi  = 1
 
     # find the top of the recirculation
-    if ri ==-1:
+    if circ_m=='vpt1':
         # determine based on vpt gradient max
         vpthg = np.gradient(np.gradient(vpt[k_hi,0:6*dzi_]))
         vpthg[0:5]=0
         maxzh = int(np.argmax(vpthg))
         maxzvpt=vpt[k_hi,maxzh]
         maxzl = int(np.argmin(np.abs(vpt[k_lo,:]-maxzvpt)))
-    else:
-        maxzh = calc_blh(vpt[k_hi,0:6*dzi_],ri)
-        maxzl = calc_blh(vpt[k_hi,0:6*dzi_],.5)
-    dzi_=min(dzi_,int(maxzl/2))
+        dzi_=min(dzi_,int(maxzl/2))
+    elif circ_m=='vpt2':
+        # determine based on vpt gradient cumulative cutoff
+        vpthg=np.gradient(vpt[k_hi,0:int(6000/dz)])
+        vpthg[0:5]=0
+        vpthgc=np.cumsum(vpthg)
+        maxzh=np.argmin(np.abs(vpthgc-cc1))
+        maxzl=maxzh
+        vptlg=np.gradient(vpt[k_lo,0:int(6000/dz)])
+        vptlg[0:5]=0
+        vptlgc=np.cumsum(vptlg)
+        minzh=np.argmin(np.abs(vptlgc-cc1))
+        dzi_=min(int(maxzl/2),maxzl-np.argmin(np.abs(vptlgc-cc1)))
+    elif circ_m[0:3]=='den':
+        # based on column to column density (vpt) difference
+        try:
+            minzh=np.argmax((vpt[k_hi,0:int(4000/dz)]-vpt[k_lo,0:int(4000/dz)])[1:]<0)+1
+        except:
+            print('E00: No crossover point in two column vpt')
+            return dThm, dRtm, wbar, 0, [0,0], 0,0,0,0,0
+        try:
+            maxzh=np.argmin((vpt[k_hi,0:int(5200/dz)]-vpt[k_lo,0:int(5200/dz)])[maxzh:]>0)
+        except:
+            maxzh=minzh+int(1000/dz)
+        dzi_=maxzh-minzh
+        dzi_= dzi_=min(dzi_,int(maxzh/2))
+        maxzl=maxzh
+        
 
+    elif circ_m=='ri':
+        # richardson number/blh based circulation
+        maxzh = calc_blh(vpt[k_hi,0:6*dzi_],cc1)
+        maxzl = calc_blh(vpt[k_lo,0:6*dzi_],.5)
+        dzi_=min(dzi_,int(maxzl/2))
+
+    print(maxzh)
+    print(minzh)
+    
     # create a filter that can smooth the circulation
+    # _a is circ; _b is recirc
     a = 1.5
     b = 1.5
-    adj = beta.pdf(np.linspace(beta.ppf(.001,a,b),beta.ppf(.999,a,b),dzi_),a,b)
+    adj = beta.pdf(np.linspace(beta.ppf(.001,a,b),beta.ppf(.999,a,b),maxzl-minzl),a,b)
     adj =adj/np.sum(adj)*dzi_
     
     # compute ur 
@@ -223,7 +299,7 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
     # check if ur is positive
     if ur < 0:
         print('E02: Surface temperature differential opposes flux diff.')
-        return dThm, dRtm, wbar, 0, 0, 0
+        return dThm, dRtm, wbar, 0, [0,0], 0,0,0,0,0
 
     # adjust ur for mean velocity
     if not ((u_[0]==0) and (u_[1]==0)):
@@ -254,7 +330,6 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
     #dRtm[k_lo,minz:maxz]=dRtm[k_lo,minz:maxz] + vflux*rtm[k_hi,minz:maxz]/(Axx[k_lo]*dz_)
 
     # compute vertical circulation (k_hi)
-    inc=20
     if vert_circ:
         wbar[k_hi,0:dzi_]=np.cumsum(vflux)/Axx[k_hi]*inc
         wbar[k_hi,dzi_:minzh]=wbar[k_hi,dzi_-1]
@@ -266,8 +341,131 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
     urz =np.max(np.abs(wbar),axis=1)
     
     #printing
-    return dThm,dRtm,wbar,ur,urz,maxzh,pur,Thi-Tlo
+    print('maxzh: %f' %maxzh)
+    print('maxzl: %f' %maxzl)
+    print('dzi: %f' %dzi_)
+    print('ur: %f' %ur)
+    print('urz: %f' %np.max(urz))
+    return dThm,dRtm,wbar,ur,urz,maxzh,maxzl,dzi_,pur,Thi-Tlo
 
+#### COMPUTE CIRCULATION TENDENCIES ####
+def circulate_pa(vpt,rtm,Axx,T,H,wd,c_,T0,l,dz_,dzi_,u_,cd_,cc1,circ_m,pa):
+    # create empty outputs
+    nz_  = vpt.shape[1]
+
+    dThm = np.zeros((2,nz_))
+    dRtm = np.zeros((2,nz_))
+    wbar = np.zeros((2,nz_))
+
+    # determine the high and low sensible heat flux column
+    sgn = (H[1]-H[0])/np.abs(H[1]-H[0])
+    if sgn<0:
+        k_lo = 1
+        k_hi  = 0
+    else:
+        k_lo = 0
+        k_hi  = 1
+    # cum vpt circ height; then pressure differential
+    vpthg=np.gradient(vpt[k_hi,0:int(6000/dz)])
+    vpthg[0:5]=0
+    vpthgc=np.cumsum(vpthg)
+    maxzh=np.argmin(np.abs(vpthgc-cc1))
+    pa_hm=pa[k_hi,maxzh]
+    maxzl=np.argmax((pa[k_lo,:]-pa_hm)<0)-1
+    minzh=np.argmax((pa[k_hi,:]-pa[k_lo,:])>0)-1
+    minzl=minzh
+    
+    l_maxzl=min(maxzl-minzl,minzl-1)
+    pa_lm=pa[k_lo,l_maxzl]
+    l_maxzh=np.argmax((pa[k_lo,:]-pa_lm)<0)-1
+    
+    # check positive circulation thickness for all levels
+    thick = min(maxzh-minzh,maxzl-minzl,l_maxzh,l_maxzl)
+    if thick<1:
+        print('E01: Circulation has non-positive thickness')
+        return dThm, dRtm, wbar, 0, [0,0], 0,0,0,0,0
+
+    # create a filter that can smooth the circulation
+    # adj_l is for lower, adj_u is for upper (recirc)
+    a = 1.5
+    b = 1.5
+    adj_l = beta.pdf(np.linspace(beta.ppf(.001,a,b),beta.ppf(.999,a,b),l_maxzh),a,b)
+    adj_l = adj_l/np.sum(adj_l)*(l_maxzh)
+
+    adj_u = beta.pdf(np.linspace(beta.ppf(.001,a,b),beta.ppf(.999,a,b),maxzl-minzl),a,b)
+    adj_u = adj_u/np.sum(adj_u)*np.sum(adj_l)
+
+    adj_lch = beta.pdf(np.linspace(beta.ppf(.001,a,b),beta.ppf(.999,a,b),l_maxzl),a,b)
+    adj_lch = adj_lch/np.sum(adj_lch)*np.sum(adj_l)
+
+    adj_uhc = beta.pdf(np.linspace(beta.ppf(.001,a,b),beta.ppf(.999,a,b),maxzh-minzh),a,b)
+    adj_uhc = adj_uhc/np.sum(adj_uhc)*np.sum(adj_l)
+
+    # compute ur 
+    Thi = np.mean(T[k_hi,0:l_maxzh])
+    Tlo = np.mean(T[k_lo,0:l_maxzl])
+    ur = c_*(Thi-Tlo)/T0*9.81**(.5)*l**(.5)
+    pur = ur
+
+    # check if ur is positive
+    if ur < 0:
+        print('E02: Surface temperature differential opposes flux diff.')
+        return dThm, dRtm, wbar, 0, [0,0], 0,0,0,0,0
+
+    # adjust ur for mean velocity
+    if not ((u_[0]==0) and (u_[1]==0)):
+        circ_dir=cd_
+        flow=circ_dir/np.sqrt(circ_dir[0]**2+circ_dir[1]**2)*ur
+        adj_flow = flow-np.dot(np.dot(flow,u_)/np.dot(u_,u_),u_)
+        ur=np.sqrt(adj_flow[0]**2+adj_flow[1]**2)
+
+    # compute horizontal circulation
+    vflux = wd*dz_*ur*adj_l
+    vflux_u = wd*dz_*ur*adj_u
+    vflux_uhc = wd*dz_*ur*adj_uhc 
+    vflux_lch = wd*dz_*ur*adj_lch
+
+    # squish
+    Tl_p=np.interp(np.linspace(0,l_maxzh-1,l_maxzh),np.linspace(0,l_maxzh-1,l_maxzl),T[k_lo,0:l_maxzl])
+    Rl_p=np.interp(np.linspace(0,l_maxzh-1,l_maxzh),np.linspace(0,l_maxzh-1,l_maxzl),rtm[k_lo,0:l_maxzl])
+    
+    print(T[k_lo,0:l_maxzl])
+    print(Tl_p)
+
+    dThm[k_hi,0:l_maxzh]=(vflux*Tl_p+Axx[k_hi]*dz_*T[k_hi,0:l_maxzh])/\
+                      (vflux+Axx[k_hi]*dz_)-T[k_hi,0:l_maxzh]
+    dRtm[k_hi,0:l_maxzh]=(vflux*Rl_p+Axx[k_hi]*dz_*rtm[k_hi,0:l_maxzh])/\
+                      (vflux+Axx[k_hi]*dz_)-rtm[k_hi,0:l_maxzh]
+
+    # compute recirculation
+    Th_p=np.interp(np.linspace(minzl,maxzl-1,maxzl-minzl),np.linspace(minzh,maxzh-1,maxzh-minzh),T[k_hi,minzh:maxzh])
+    Rh_p=np.interp(np.linspace(minzl,maxzl-1,maxzl-minzl),np.linspace(minzh,maxzh-1,maxzh-minzh),rtm[k_hi,minzh:maxzh])
+
+    dThm[k_lo,minzl:maxzl]=dThm[k_lo,minzl:maxzl] +(vflux_u*Th_p+\
+                         Axx[k_lo]*dz_*T[k_lo,minzl:maxzl])/(vflux_u+Axx[k_lo]*dz_)-\
+                         T[k_lo,minzl:maxzl]
+    dRtm[k_lo,minzl:maxzl]=dRtm[k_lo,minzl:maxzl] +(vflux_u*Rh_p+\
+                         Axx[k_lo]*dz_*rtm[k_lo,minzl:maxzl])/(vflux_u+Axx[k_lo]*dz_)-\
+                         rtm[k_lo,minzl:maxzl]
+
+    # compute vertical circulation (k_hi)
+    if vert_circ:
+        wbar[k_hi,0:l_maxzh]=np.cumsum(vflux)/Axx[k_hi]*inc
+        wbar[k_hi,l_maxzh:minzh]=wbar[k_hi,l_maxzh-1]
+        wbar[k_hi,minzh:maxzh]=wbar[k_hi,l_maxzh-1]-np.cumsum(vflux_uhc)/Axx[k_hi]*inc
+        wbar[k_lo,0:l_maxzl]=-np.cumsum(vflux_lch)/Axx[k_lo]*inc
+        wbar[k_lo,l_maxzl:minzl]=wbar[k_lo,l_maxzl-1]
+        wbar[k_lo,minzl:maxzl]=wbar[k_lo,l_maxzl-1]+np.cumsum(vflux_u)/Axx[k_lo]*inc
+
+    urz =np.max(np.abs(wbar),axis=1)
+    dzi_=(maxzh-minzh)*10**6+(maxzl-minzl)*10**3+l_maxzl+l_maxzh*10**(-3)
+    print('maxzh: %f' %maxzh)
+    print('maxzl: %f' %maxzl)
+    print('dzi: %f' %dzi_)
+    print('ur: %f' %ur)
+    print('urz: %f' %np.max(urz))
+    
+    return dThm,dRtm,wbar,ur,urz,maxzh,maxzl,dzi_,pur,Thi-Tlo
 
 
 #### FIND NEAREST VALUE IN AN ARRAY ####
@@ -633,6 +831,14 @@ except:
     shutil.rmtree(m_dir)
     os.mkdir(m_dir)
 
+# pull in the sw down and surface pressure
+t0_var = datetime.datetime(2012,5,1,0,0)
+fp_sw=nc.Dataset(met_dir,'r')
+swt_init =int(((stdt-t0_var).total_seconds()/3600+1)) #initial time to read
+swt_final=int(((endt-t0_var).total_seconds()/3600+1)) #final time to read
+sw_dwn =fp_sw['sw_dn_srf'][swt_init:swt_final]
+psurf  =np.mean(fp_sw['p_srf_aver'][swt_init:swt_final])
+
 # copy from the main run folder
 shutil.copytree(blank_run,w_dir+'/k_'+str(k)+'/c_1')
 
@@ -677,6 +883,10 @@ for line in fp:
         zmline = 'zm_top = '+str(zmax)+' ! Maximum Altitude of '+\
                  'highest momentum level on any grid. [m]'
         lines.append(zmline+'\n')
+    elif line[0:5]=='p_sfc':
+        psfcline='p_sfc = '+str(int(psurf))+'.e2'+'    ! Pressure at model '+\
+                 'base              [Pa]'
+        lines.append(psfcline+'\n')
     else:
         lines.append(line)
 fp.close()
@@ -770,13 +980,6 @@ for i in list(range(k)):
         subprocess.run('python create_arm_data_cpl.py -a '+atm_dir,shell=True)
     os.chdir(dir_old)
 
-# pull in the sw down
-t0_var = datetime.datetime(2012,5,1,0,0)
-fp_sw=nc.Dataset(met_dir,'r')
-swt_init =int(((stdt-t0_var).total_seconds()/3600+1)) #initial time to read
-swt_final=int(((endt-t0_var).total_seconds()/3600+1)) #final time to read
-sw_dwn =fp_sw['sw_dn_srf'][swt_init:swt_final]
-
 print('...Calculate Lengthscale of Heterogeneity',flush=True)
 # Calculate Lengthscale of Heterogeneity
 Hgg = Hg[hggt,:,:]
@@ -798,6 +1001,8 @@ for j in list(range(1,k+1)):
             data2[d]=times_frc
         elif ((d == 'vm_ref[m\s]') or (d == 'omega[Pa\s]') or (d == 'um_ref[m\s]')) and no_wind_frc:
             data2[d]=np.ones((int(nt_frc),nz_forcing))*-999.9
+        elif ((d == 'T_f[K\s]') or (d == 'rtm_f[kg\kg\s]')) and no_tq_frc:
+            data2[d]=np.zeros((int(nt_frc),nz_forcing))
         else:
             data2[d]=np.zeros((int(nt_frc),nz_forcing))
             for l in range(nz_forcing):
@@ -814,18 +1019,10 @@ for j in list(range(1,k+1)):
 # cluster based on sensible heat and then adjust the other surface var
 print('CLUSTERING',flush=True)
 
-k_masks=np.zeros((nt,nx*nx))
-for i in list(range(k)):
-    Hv2 = Hv[np.mean(Hv,axis=1)>20,:]
-    Hvn   = normalize(np.mean(Hv2[:,:],axis=0))
-    X = np.reshape(Hvn,(-1,1))
-    model = sklearn.cluster.KMeans(n_clusters=k)
-    model.fit(X)
-    Y = model.predict(X)
-    for t in range(nt):
-        k_masks[t,:] = Y[:]
-
-
+if k>1:
+    k_masks=cluster(Hv[hggt,:],nt)
+else:
+    k_masks=np.zeros((nt,nx*nx))
 
 # ------------------- #
 # WRITE SURFACE FILES #
@@ -835,15 +1032,19 @@ print('OVERWRITE SURFACE FILES',flush=True)
 
 # overwrite arm_sfc.in
 for j in list(range(1,k+1)):
+    
     sfc_path = w_dir+'/k_'+str(k)+'/c_'+str(j)+\
                    '/input/case_setups/arm_sfc.in'
+    if j ==1:
+        shutil.copy(sfc_path,w_dir+'/k_'+str(k)+'/arm_sfc_original.in')
+
     # begin overwriting file
     fp = open(sfc_path,'w')
 
     # Write the header information
     fp.write('! $Id$\n')
     fp.write('!\n')
-    fp.write('! Note that T_sfc is included here,'+\
+    fp.write('! NoTE that T_sfc is included here,'+\
                  ' but it is not currently used. It is\n')
     fp.write('! included here to facilitate a transition '+\
              'to using T_sfc in the future\n')
@@ -861,7 +1062,6 @@ for j in list(range(1,k+1)):
         fp.write(tmp)
     fp.close()
     
-    shutil.copy(sfc_path,w_dir+'/k_'+str(k)+'/arm_sfc_original.in')
 
 
 # --------------- #
@@ -896,25 +1096,26 @@ fp['frac'][:]=np.array(clst_frac)[:]
 # compute the width of the connecting surface 
 W = np.zeros((k,k))
 cdirect = np.zeros((k,k,2))
-for i in range(nx):
-    for j in range(nx):
-        cl = int(clst_2d[0,i,j])
-        if i>0:
-            cl_2 = int(clst_2d[0,i-1,j])
-            W[cl,cl_2]=W[cl,cl_2]+dx
-            cdirect[cl,cl_2,1]=cdirect[cl,cl_2,1]-1
-        if i<(nx-1):
-            cl_2 = int(clst_2d[0,i+1,j])
-            W[cl,cl_2]=W[cl,cl_2]+dx
-            cdirect[cl,cl_2,1]=cdirect[cl,cl_2,1]+1
-        if j>0:
-            cl_2 = int(clst_2d[0,i,j-1])
-            W[cl,cl_2]=W[cl,cl_2]+dx
-            cdirect[cl,cl_2,0]=cdirect[cl,cl_2,0]-1
-        if j<(nx-1):
-            cl_2 = int(clst_2d[0,i,j+1])
-            W[cl,cl_2]=W[cl,cl_2]+dx
-            cdirect[cl,cl_2,0]=cdirect[cl,cl_2,0]+1
+if k>=2:
+    for i in range(nx):
+        for j in range(nx):
+            cl = int(clst_2d[0,i,j])
+            if i>0:
+                cl_2 = int(clst_2d[0,i-1,j])
+                W[cl,cl_2]=W[cl,cl_2]+dx
+                cdirect[cl,cl_2,1]=cdirect[cl,cl_2,1]-1
+            if i<(nx-1):
+                cl_2 = int(clst_2d[0,i+1,j])
+                W[cl,cl_2]=W[cl,cl_2]+dx
+                cdirect[cl,cl_2,1]=cdirect[cl,cl_2,1]+1
+            if j>0:
+                cl_2 = int(clst_2d[0,i,j-1])
+                W[cl,cl_2]=W[cl,cl_2]+dx
+                cdirect[cl,cl_2,0]=cdirect[cl,cl_2,0]-1
+            if j<(nx-1):
+                cl_2 = int(clst_2d[0,i,j+1])
+                W[cl,cl_2]=W[cl,cl_2]+dx
+                cdirect[cl,cl_2,0]=cdirect[cl,cl_2,0]+1
 fp['W'][:] = W[:]
 
 # compute the sensible heat flux of each cluster
@@ -1046,7 +1247,9 @@ u_r0 = np.ones((len(tlist),))*-1
 dvpt = np.ones((len(tlist),))*-1
 u_r = np.ones((len(tlist),))*-1
 u_rz=np.ones((2,len(tlist)))*-1
-z_circ = np.ones((len(tlist),))*-1
+z_circh = np.ones((len(tlist),))*-1
+z_circl = np.ones((len(tlist),))*-1
+dzic = np.ones((len(tlist),))*-1
 
 # read in forcings
 for i in range(1,k+1):
@@ -1060,6 +1263,7 @@ for i in range(1,len(tlist)):
     thlm = np.zeros((k,nz))
     thvm = np.zeros((k,nz))
     rig  = np.zeros((k,nz))
+    pa   = np.zeros((k,nz))
     um   = [0,0]
 
     try:
@@ -1071,14 +1275,17 @@ for i in range(1,len(tlist)):
             rtms[j-1,:]=fp['rtm'][int(round(n_rest_out-1)),:,0,0]
             thlm[j-1,:]=fp['thlm'][int(round(n_rest_out-1)),:,0,0]
             thvm[j-1,:]=fp['thvm'][int(round(n_rest_out-1)),:,0,0]
-            fp2 = nc.Dataset(m_dir+'/c_'+str(j)+'/output/arm_zm.nc','r')
-            rig[j-1,:]=fp2['Richardson_num'][int(round(n_rest_out-1)),:,0,0]
-            
+            if circ_m== 'ri':
+                fp2 = nc.Dataset(m_dir+'/c_'+str(j)+'/output/arm_zm.nc','r')
+                rig[j-1,:]=fp2['Richardson_num'][int(round(n_rest_out-1)),:,0,0]
+                fp2.close()
+            if circ_m== 'pa':
+                pa[j-1,:]=fp['p_in_Pa'][int(round(n_rest_out-1)),:,0,0]
+
             # load in windspeed
             if wind_cr:
                 um[0]=np.mean(fp['um'][int(round(n_rest_out-1)),0:25,0,0])
                 um[1]=np.mean(fp['vm'][int(round(n_rest_out-1)),0:25,0,0])
-            fp2.close()
             fp.close()
     except KeyboardInterrupt:
         sys.exit()
@@ -1098,14 +1305,14 @@ for i in range(1,len(tlist)):
         wz=np.zeros((k,thvm.shape[1]))
         for k1 in range(k):
             for k2 in range(k1+1,k):
-                if c_ri==-1:
-                    data=thvm[[k1,k2],:]
-                else:
+                if circ_m=='ri':
                     data=rig[[k1,k2],:]
-                dThlm,dRtm,wz,u_r[i],u_rz[:,i],z_circ[i],u_r0[i],dvpt[i] = \
+                else:
+                    data=thvm[[k1,k2],:]
+                dThlm,dRtm,wz,u_r[i],u_rz[:,i],z_circh[i],z_circl[i],dzic[i],u_r0[i],dvpt[i] = \
                         circulate(data,rtms[[k1,k2],:],A[[k1,k2]],\
                         tmps[[k1,k2],:],H2[i,[k1,k2]],W[k1,k2],c_=c_ur*doflux[i],\
-                        cd_=cdirect[k1,k2,:],u_=um,l=l_het,ri=c_ri)
+                        cd_=cdirect[k1,k2,:],u_=um,l=l_het,pa=pa)
 
     for j in list(range(1,k+1)):
         frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
@@ -1188,13 +1395,17 @@ fp.createDimension('xy',size=2)
 fp.createDimension('t_model',size=len(tlist))
 fp.createVariable('t_model','d',dimensions=('t_model'))
 fp.createVariable('u_r','d',dimensions=('t_model'))
-fp.createVariable('z_circ','d',dimensions=('t_model'))
+fp.createVariable('z_circh','d',dimensions=('t_model'))
+fp.createVariable('z_circl','d',dimensions=('t_model'))
+fp.createVariable('dz_circ','d',dimensions=('t_model'))
 fp.createVariable('flow_dir','d',dimensions=('clst','clst','xy'))
 fp.createVariable('u_rz','d',dimensions=('clst','t_model'))
 fp.createVariable('u_r0','d',dimensions=('t_model'))
 fp.createVariable('dvpt','d',dimensions=('t_model'))
 fp['u_r'][:]=u_r[:]
-fp['z_circ'][:]=z_circ[:]*dz
+fp['z_circh'][:]=z_circh[:]*dz
+fp['z_circl'][:]=z_circl[:]*dz
+fp['dz_circ'][:]=dzic[:]
 fp['flow_dir'][:]=cdirect[:]
 fp['u_rz'][:]=u_rz[:]
 fp['u_r0'][:]=u_r0[:]

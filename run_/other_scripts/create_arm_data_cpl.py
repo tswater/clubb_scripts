@@ -75,8 +75,8 @@ def prepare_forcing_data(fpi,date,idate,fdate):
 
  #Write the data as requested by CLUBB
  lev = 100*np.array(fpi['lev']) #Pa
- dTdt = np.array(fpi['dTdt'])[:,:]/3600.0 # K/hour -> K/s
- dqdt = np.array(fpi['dqdt'])[:,:]/1000.0/3600.0 #g/kg/hour -> kg/kg/s
+ dTdt = np.array(fpi['T_adv_h'])[:,:]/3600.0 # K/hour -> K/s
+ dqdt = np.array(fpi['q_adv_h'])[:,:]/1000.0/3600.0 #g/kg/hour -> kg/kg/s
  u = np.array(fpi['u'])[:,:]
  v = np.array(fpi['v'])[:,:]
  omega = np.array(fpi['omega'])[:,:]*100/3600.0 #mb/hr -> Pa/s
