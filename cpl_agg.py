@@ -6,19 +6,20 @@ import argparse
 # ----------- #
 # USER INPUTS #
 # ----------- #
-main_dir = '/home/tsw35/tyche/clubb/test_ncpl/'
+main_dir = '/home/tsw35/tyche/clubb/test_cpl2/'
 force_agg = True
 dt = 60
 out_var = {'zm': {'latitude':[],'longitude':[],'altitude':[],'time':[],\
                   'thlp2_ta':[],'thlp2_tp':[],'thlp2_dp1':[],'thlp2_dp2':[],\
                   'thlp2_ma':[],'thlp2_forcing':[],'thlp2':[],'wp2':[],'up2':[],\
                   'vp2':[],'Richardson_num':[],'bv_freq_sqd':[],'wprtp':[],\
-                  'wpthlp':[]},\
+                  'wpthlp':[],'rtp2':[]},\
         'zt': {'latitude':[],'longitude':[],'altitude':[],'time':[],'thlm':[],\
                   'um':[],'vm':[],'p_in_Pa':[],'rtm':[],'T_in_K':[],'thvm':[],\
                   'ug':[],'vg':[],'wm':[],'cloud_cover':[],'rho':[],'rcm':[],\
                   'wp3':[],'thlp3':[],'rtp3':[],'wpthlp2':[],'wp2thlp':[],\
-                  'wprtp2':[],'wp2rtp':[],'Skw_zt':[]},\
+                  'wprtp2':[],'wp2rtp':[],'Skw_zt':[],'thlm_ma':[],'rtm_ma':[],\
+                  'rtm_forcing':[],'thlm_forcing':[]},\
         'sfc':{'latitude':[],'longitude':[],'altitude':[],'time':[],'sh':[],\
                'lh':[],'lwp':[],'ustar':[],'cc':[],'z_cloud_base':[],'T_sfc':[],\
                'z_inversion':[]}}
@@ -225,6 +226,19 @@ if agg_clst or force_agg:
                     else:
                         ovar[f][var][:,:,0,0]=ovar[f][var][:,:,0,0]+fp_in[var][:,:,0,0]*wts_z[:,:,ci-1]
             
+            # Fix Variances
+            if (ki == 2) and (f=='zm'):
+                for varb in ['um','vm','wm','thlm','rtm']:
+                    varp=varb[:-1]+'p2'
+                    fp1t=nc.Dataset(main_dir+'k_'+str(ki)+'/c_1/output/arm_zt.nc','r')
+                    fp2t=nc.Dataset(main_dir+'k_'+str(ki)+'/c_2/output/arm_zt.nc','r')
+                    xm1=fp1t[varb][:,:,0,0]
+                    xm2=fp2t[varb][:,:,0,0]
+                    f1=wts_z[:,:,0]
+                    f2=wts_z[:,:,1]
+                    ovar[f][varp][:,:,0,0]=ovar[f][varp][:,:,0,0]+f1*(xm1-(f1*xm1+f2*xm2))**2
+
+
             # output everything to files
             fp_out=nc.Dataset(agfile,'w')
             fp_out.createDimension('time',size=len(times))
@@ -245,4 +259,6 @@ if agg_clst or force_agg:
                     continue
                 fp_out.createVariable(var,'d',dimensions=dim)
                 fp_out[var][:]=ovar[f][var][:]
+        
+
 

@@ -23,7 +23,7 @@ cpl_subdir = 'sgp_deleteme/'
 sgp_dir  = '/stor/soteria/hydro/shared/lasso_for_tyler/'
 day_dir  = '/stor/soteria/hydro/shared/data/tylersclutter/doz_tylertrim/'
 sgp_dir2 = '/stor/soteria/hydro/shared/data/tylersclutter/surfaces201589/'
-agg_only = False # if True, will only aggregate not rerun model
+agg_only = False# if True, will only aggregate not rerun model
 
 #### ARG PARSER ####
 prs = argparse.ArgumentParser(description='Short sample app')
@@ -77,11 +77,10 @@ int_cases=[20160625,20160716,20160719,20160720,20170609,
           20180522,20180530,20180618,20180619,20180704,
           20180705,20180523,20180707,20180709,20180710,
           20180711,20180712,20180809,20180811,20180916,
-          20180917,20190707,20190709,20190714,20190804,
-          20190805]
-day_list=[]
-for i in int_cases:
-    day_list.append('01234567'+str(i))
+          20180917,20190707,20190709,20190714]
+#day_list=[]
+#for i in int_cases:
+#    day_list.append('01234567'+str(i))
 
 for file in day_list[rank::size]:
     datest = file[8:12]+'-'+file[12:14]+'-'+file[14:16]+'-'+'15'
