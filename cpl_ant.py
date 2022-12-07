@@ -49,14 +49,14 @@ dz      = 40 # dz
 zmax    = 12000
 dzc     = 1000
 nz      = int(np.floor(zmax/dz)+1)
-stdate  = '2017-07-16T12:00:00.000'# start date iso format T10:00:00.000
+stdate  = '2017-07-16T11:00:00.000'# start date iso format T10:00:00.000
 enddate = '2017-07-17T03:00:00.000'# end date iso format
-dirname = 'test_cpl'
-c_ur    = 5
+dirname = 'test_cpl2'
+c_ur    = 2
 no_wind_frc = False # if true, will ignore forcings for wind velocity
 l_het   = -2 # Length of heterog. in meters; -1: calculate, -2: || to wind
 c_7     = -1 # default is non constant (-1), bouancy term, .3 to .8 is listed range
-flux_on = 1 # turn on cirrculation flux (1) turn off (0)
+flux_on = 0 # turn on cirrculation flux (1) turn off (0)
 wind_cr = 1 # turn on directional wind corrections to flux (1) turn off (0)
 inc     = 1 # increase in vertical windspeed relative to what it should be by volume balance
 cut_off = .8 # cuttoff for correlation function heterogeneity
@@ -72,9 +72,9 @@ cut_off = .8 # cuttoff for correlation function heterogeneity
 # pa     : circulation height in hot determined by cumulative value of grad
 #          of vpt. Pressure guides everything else following BJERKNES
 #          circulation theorem
-circ_m  = 'den' # circulation method
+circ_m  = 'eb' # circulation method
 cc1     = 2.8 # has different meanings depending on the circulation method
-cc2     = 4 # power law for u_r
+cc2     = 1 # power law for u_r
 #### PARSE ####
 
 prs = argparse.ArgumentParser(description='Short sample app')
@@ -221,146 +221,9 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
     cd_: float(2)
         2 component direction of circulation
     """
-    if circ_m=='pa':
-        return circulate2(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=u_,cd_=cd_,cc1=cc1,circ_m=circ_m,pa=pa)
-    if circ_m=='den':
-        return circulate2(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=u_,cd_=cd_,cc1=cc1,cc2=cc2,circ_m=circ_m,pa=pa,urpv=urpv)
-    if circ_m=='den2':
-        return circulate2(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=u_,cd_=cd_,cc1=cc1,circ_m=circ_m,pa=pa)
+    if circ_m == 'eb':
+        return eb_circulate(vpt,rtm,Axx,T,H,wd,c_,T0,l,dz_,dzi_,u_,cd_,cc1,cc2,circ_m,pa,urpv)
 
-    
-    # create empty outputs
-    nz_  = vpt.shape[1]
-
-    dThm = np.zeros((2,nz_))
-    dRtm = np.zeros((2,nz_))
-    wbar = np.zeros((2,nz_))
-    
-    # determine the high and low sensible heat flux column
-    sgn = (H[1]-H[0])/np.abs(H[1]-H[0])
-    if sgn<0:
-        k_lo = 1
-        k_hi  = 0
-    else:
-        k_lo = 0
-        k_hi  = 1
-
-    # find the top of the recirculation
-    if circ_m=='vpt1':
-        # determine based on vpt gradient max
-        vpthg = np.gradient(np.gradient(vpt[k_hi,0:6*dzi_]))
-        vpthg[0:5]=0
-        maxzh = int(np.argmax(vpthg))
-        maxzvpt=vpt[k_hi,maxzh]
-        maxzl = int(np.argmin(np.abs(vpt[k_lo,:]-maxzvpt)))
-        dzi_=min(dzi_,int(maxzl/2))
-    elif circ_m=='vpt2':
-        # determine based on vpt gradient cumulative cutoff
-        vpthg=np.gradient(vpt[k_hi,0:int(6000/dz)])
-        vpthg[0:5]=0
-        vpthgc=np.cumsum(vpthg)
-        maxzh=np.argmin(np.abs(vpthgc-cc1))
-        maxzl=maxzh
-        vptlg=np.gradient(vpt[k_lo,0:int(6000/dz)])
-        vptlg[0:5]=0
-        vptlgc=np.cumsum(vptlg)
-        minzh=np.argmin(np.abs(vptlgc-cc1))
-        dzi_=min(int(maxzl/2),maxzl-np.argmin(np.abs(vptlgc-cc1)))
-    elif circ_m[0:3]=='den':
-        # based on column to column density (vpt) difference
-        try:
-            minzh=np.argmax((vpt[k_hi,0:int(4000/dz)]-vpt[k_lo,0:int(4000/dz)])[1:]<0)+1
-        except:
-            print('E00: No crossover point in two column vpt')
-            return dThm, dRtm, wbar, 0, [0,0], 0,0,0,0,0
-        try:
-            maxzh=np.argmin((vpt[k_hi,0:int(5200/dz)]-vpt[k_lo,0:int(5200/dz)])[maxzh:]>0)
-        except:
-            maxzh=minzh+int(1000/dz)
-        dzi_=maxzh-minzh
-        dzi_= dzi_=min(dzi_,int(maxzh/2))
-        maxzl=maxzh
-        
-
-    elif circ_m=='ri':
-        # richardson number/blh based circulation
-        maxzh = calc_blh(vpt[k_hi,0:6*dzi_],cc1)
-        maxzl = calc_blh(vpt[k_lo,0:6*dzi_],.5)
-        dzi_=min(dzi_,int(maxzl/2))
-
-    print(maxzh)
-    print(minzh)
-    
-    # create a filter that can smooth the circulation
-    # _a is circ; _b is recirc
-    a = 1.5
-    b = 1.5
-    adj = beta.pdf(np.linspace(beta.ppf(.001,a,b),beta.ppf(.999,a,b),maxzl-minzl),a,b)
-    adj =adj/np.sum(adj)*dzi_
-    
-    # compute ur 
-    Thi = np.mean(T[k_hi,0:dzi_])
-    Tlo = np.mean(T[k_lo,0:dzi_])
-    ur = c_*(Thi-Tlo)/T0*9.81**(.5)*l**(.5)
-    pur = ur
-    
-    # check if ur is positive
-    if ur < 0:
-        print('E02: Surface temperature differential opposes flux diff.')
-        return dThm, dRtm, wbar, 0, [0,0], 0,0,0,0,0
-
-    # adjust ur for mean velocity
-    if not ((u_[0]==0) and (u_[1]==0)):
-        circ_dir=cd_
-        flow=circ_dir/np.sqrt(circ_dir[0]**2+circ_dir[1]**2)*ur
-        adj_flow = flow-np.dot(np.dot(flow,u_)/np.dot(u_,u_),u_)
-        ur=np.sqrt(adj_flow[0]**2+adj_flow[1]**2)
-
-    # compute horizontal circulation
-    vflux = wd*dz_*ur*adj
-
-    dThm[k_hi,0:dzi_]=(vflux*T[k_lo,0:dzi_]+Axx[k_hi]*dz_*T[k_hi,0:dzi_])/\
-                      (vflux+Axx[k_hi]*dz_)-T[k_hi,0:dzi_]
-    dRtm[k_hi,0:dzi_]=(vflux*rtm[k_lo,0:dzi_]+Axx[k_hi]*dz_*rtm[k_hi,0:dzi_])/\
-                      (vflux+Axx[k_hi]*dz_)-rtm[k_hi,0:dzi_]
-
-    # compute recirculation
-    minzh=maxzh-dzi_
-    minzl=maxzl-dzi_
-    
-    dThm[k_lo,minzl:maxzl]=dThm[k_lo,minzl:maxzl] +(vflux*T[k_hi,minzh:maxzh]+\
-                         Axx[k_lo]*dz_*T[k_lo,minzl:maxzl])/(vflux+Axx[k_lo]*dz_)-\
-                         T[k_lo,minzl:maxzl]
-    dRtm[k_lo,minzl:maxzl]=dRtm[k_lo,minzl:maxzl] +(vflux*rtm[k_hi,minzh:maxzh]+\
-                         Axx[k_lo]*dz_*rtm[k_lo,minzl:maxzl])/(vflux+Axx[k_lo]*dz_)-\
-                         rtm[k_lo,minzl:maxzl]
-    #dThm[k_lo,minz:maxz]=dThm[k_lo,minz:maxz] + vflux*T[k_hi,minz:maxz]/(Axx[k_lo]*dz_)
-    #dRtm[k_lo,minz:maxz]=dRtm[k_lo,minz:maxz] + vflux*rtm[k_hi,minz:maxz]/(Axx[k_lo]*dz_)
-
-    # compute vertical circulation (k_hi)
-    if vert_circ:
-        wbar[k_hi,0:dzi_]=np.cumsum(vflux)/Axx[k_hi]*inc
-        wbar[k_hi,dzi_:minzh]=wbar[k_hi,dzi_-1]
-        wbar[k_hi,minzh:maxzh]=wbar[k_hi,dzi_-1]-np.cumsum(vflux)/Axx[k_hi]*inc
-        wbar[k_lo,0:dzi_]=-np.cumsum(vflux)/Axx[k_lo]*inc
-        wbar[k_lo,dzi_:minzl]=wbar[k_lo,dzi_-1]
-        wbar[k_lo,minzl:maxzl]=wbar[k_lo,dzi_-1]+np.cumsum(vflux)/Axx[k_lo]*inc
-    
-    urz =np.max(np.abs(wbar),axis=1)
-    
-    #printing
-    print('maxzh: %f' %maxzh)
-    print('maxzl: %f' %maxzl)
-    print('minzh: %f' %minzh)
-    print('minzl: %f' %minzl)
-    print('dzi: %f' %dzi_)
-    print('ur: %f' %ur)
-    print('urz: %f' %np.max(urz))
-    return dThm,dRtm,wbar,ur,urz,maxzh,maxzl,dzi_,pur,Thi-Tlo
-
-#### COMPUTE CIRCULATION TENDENCIES PRESSURE FLOW ####
-def circulate2(vpt,rtm,Axx,T,H,wd,c_,T0,l,dz_,dzi_,u_,cd_,cc1,cc2,circ_m,pa,urpv):
-    
     # create empty outputs
     nz_  = vpt.shape[1]
 
@@ -520,6 +383,143 @@ def circulate2(vpt,rtm,Axx,T,H,wd,c_,T0,l,dz_,dzi_,u_,cd_,cc1,cc2,circ_m,pa,urpv
 
     return dThm,dRtm,wbar,ur,urz,maxzh,maxzl,dzi_,pur,Thi-Tlo
 
+#### COMPUTE ENERGY BASED CIRCULATION ####
+def eb_circulate(vpt,rtm,Axx,T,H,wd,c_,T0,l,dz_,dzi_,u_,cd_,cc1,cc2,circ_m,pa,urpv):
+
+    # create empty outputs
+    nz_  = vpt.shape[1]
+    
+    dThm = np.zeros((2,nz_))
+    dRtm = np.zeros((2,nz_))
+    wbar = np.zeros((2,nz_))
+    
+    k_hi=1
+    k_lo=0
+
+    sgn=(vpt[k_hi,:]-vpt[k_lo,:])/np.abs(vpt[k_hi,:]-vpt[k_lo,:]+.0000001)
+    ur = c_*(np.abs(vpt[k_hi,:]-vpt[k_lo,:])/T0)**(cc2)*9.81**(.5)*l**(.5)
+    pur = ur.copy()
+
+    # adjust ur for mean velocity
+    if not ((u_[0]==0) and (u_[1]==0)):
+        circ_dir=np.array([sgn,sgn])
+        circ_dir[0,:]=circ_dir[0,:]*cd_[0]
+        circ_dir[1,:]=circ_dir[1,:]*cd_[1]
+        
+        flow=circ_dir/np.sqrt(circ_dir[0]**2+circ_dir[1]**2)*ur
+        adj_flow = np.zeros(flow.shape)
+        for x in range(nz_):
+            adj_flow[:,x] = flow[:,x]-np.dot(np.dot(flow[:,x],u_)/np.dot(u_,u_),u_)
+        ur=np.sqrt(adj_flow[0,:]**2+adj_flow[1,:]**2)*sgn
+
+    # ensure that changes are not too dramatic (max at .5 m/s change in speed)
+    #ur[np.abs(ur-urpv)>1]=1*ur[np.abs(ur-urpv)>1]/np.abs(ur[np.abs(ur-urpv)>1])
+
+    # create empty energy 
+    KE=np.zeros((2,len(ur)))
+    KEh=np.zeros((2,len(ur)))
+    BE=np.zeros((2,len(ur)))
+
+    # first level
+    KEh[k_hi,0]=.5*W[0,1]*np.mean(ur[0:5])**3*dz_
+    KEh[k_lo,0]=-.5*W[0,1]*np.mean(ur[0:5])**3*dz_
+    
+    KE[k_hi,0]=KEh[k_hi,0]
+    KE[k_lo,0]=KEh[k_lo,0]
+    wbar[k_hi,0]=np.cbrt(2*KE[k_hi,0]/Axx[k_hi])
+    wbar[k_lo,0]=np.cbrt(2*KE[k_lo,0]/Axx[k_lo])
+
+    # going up
+    maxzh=0
+    zcrit=0
+    for x in range(1,nz_):
+        if x<=5:
+            KEh[k_hi,x]=.5*W[0,1]*np.mean(ur[0:5])**3*dz_
+            KEh[k_lo,x]=-.5*W[0,1]*np.mean(ur[0:5])**3*dz_
+        else:
+            KEh[k_hi,x]=.5*W[0,1]*np.mean(ur[x])**3*dz_
+            KEh[k_lo,x]=-.5*W[0,1]*np.mean(ur[x])**3*dz_
+        if x>4:
+            tenv=(vpt[k_hi,x-1]+vpt[k_hi,x])/2
+            tprc=vpt[k_hi,x-1]
+            BE[k_hi,x]=Axx[k_hi]*9.8*(tprc-tenv)/(2*tenv)*wbar[k_hi,x-1]*dz_
+
+            tprc=vpt[k_lo,x]
+            tenv=(vpt[k_lo,x-1]+vpt[k_lo,x])/2
+            BE[k_lo,x]=-Axx[k_lo]*9.8*(tprc-tenv)/(2*tenv)*wbar[k_lo,x-1]*dz_
+        KE[k_hi,x]=BE[k_hi,x]+KEh[k_hi,x]+KE[k_hi,x-1]
+        wbar[k_hi,x]=np.cbrt(2*KE[k_hi,x]/Axx[k_hi])
+        if ur[x]>0:
+            KE[k_lo,x]=BE[k_lo,x]+KEh[k_lo,x]+KE[k_lo,x-1]
+            if (KE[k_lo,x-1]<0) & (KE[k_lo,x]>0):
+                wbar[k_lo,x]=0
+                KE[k_lo,x]=0
+            else:
+                wbar[k_lo,x]=np.cbrt(2*KE[k_lo,x]/Axx[k_lo])
+        else:
+            if zcrit==0:
+                zcrit=x
+        
+
+        if KE[k_hi,x]<0:
+            maxzh=x-1
+            KE[k_hi,x]=0
+            wbar[k_hi,x]=0
+            break
+    ur[wbar[k_hi,:]==0]=0
+    maxzl=maxzh
+    
+    # copy ur setting first 5 levels to positive but small
+    ur_tmp=ur.copy()
+    ur_tmp[0:5]=.00001
+
+    if not zcrit==np.argmin(ur_tmp>0):
+        print()
+        print('zcrit error')
+        print(zcrit)
+        print(np.argmin(ur_tmp>0))
+        print()
+    zcrit=np.argmin(ur_tmp>0)
+
+    if ur[maxzl]<0:
+        # top level cold
+        KEh[k_lo,maxzh]=np.abs(KEh[k_hi,maxzh])
+
+        KE[k_lo,maxzh]=np.abs(KEh[k_lo,0])
+        wbar[k_lo,maxzh]=-np.cbrt(2*KE[k_lo,0]/Axx[k_lo])
+        # going down
+        for x in range(maxzh-1,zcrit-1,-1):
+            KEh[k_lo,x]=np.abs(KEh[k_hi,x])
+            tenv=(vpt[k_lo,x+1]+vpt[k_lo,x])/2
+            tprc=vpt[k_lo,x+1]
+            BE[k_lo,x]=Axx[k_lo]*9.8*(tprc-tenv)/(2*tenv)*wbar[k_lo,x+1]*dz_
+            KE[k_lo,x]=BE[k_lo,x]+KEh[k_lo,x]+KE[k_lo,x+1]
+            if (KE[k_lo,x]<0)&(KEh[k_lo,x]>0):
+                KE[k_lo,x]=0
+                BE[k_lo,x]=-KEh[k_lo,x]
+            wbar[k_lo,x]= -np.cbrt(2*KE[k_lo,x]/Axx[k_lo])
+    
+
+    # compute dThm and dRtm
+    mskh=KEh[k_hi,:]>0
+    mskl=KEh[k_lo,:]>0
+    vflx=ur[:]*wd*dz_
+    dThm[k_hi,mskh]=(vflx[mskh]*T[k_lo,mskh]+Axx[k_hi]*dz_*T[k_hi,mskh])/(vflx[mskh]+Axx[k_hi]*dz_)-T[k_hi,mskh]
+    dThm[k_lo,mskl]=(vflx[mskl]*T[k_hi,mskl]+Axx[k_lo]*dz_*T[k_lo,mskl])/(vflx[mskl]+Axx[k_lo]*dz_)-T[k_lo,mskl]
+
+    dRtm[k_hi,mskh]=(vflx[mskh]*rtm[k_lo,mskh]+Axx[k_hi]*dz_*rtm[k_hi,mskh])/(vflx[mskh]+Axx[k_hi]*dz_)-rtm[k_hi,mskh]
+    dRtm[k_lo,mskl]=(vflx[mskl]*rtm[k_hi,mskl]+Axx[k_lo]*dz_*rtm[k_lo,mskl])/(vflx[mskl]+Axx[k_lo]*dz_)-rtm[k_lo,mskl]
+    
+    urz =np.max(np.abs(wbar),axis=1)
+
+    print('maxzh: %f' %maxzh)
+    print('maxzl: %f' %maxzl)
+    print('ur_tp: %f' %ur[maxzh])
+    print('ur_0: %f' %ur[0])
+    print('ur: %f' %np.nanmax(ur))
+    print('wbar: %f' %np.nanmax(wbar))
+
+    return dThm,dRtm,wbar,ur,urz,maxzh,maxzl,dzi_,pur,0
 
 #### FIND NEAREST VALUE IN AN ARRAY ####
 def find_nearest(array, value):
@@ -890,7 +890,10 @@ fp_sw=nc.Dataset(met_dir,'r')
 swt_init =int(((stdt-t0_var).total_seconds()/3600+1)) #initial time to read
 swt_final=int(((endt-t0_var).total_seconds()/3600+1)) #final time to read
 sw_dwn =fp_sw['sw_dn_srf'][swt_init:swt_final]
-psurf  =np.mean(fp_sw['p_srf_aver'][swt_init:swt_final])
+psurf  =np.nanmean(fp_sw['p_srf_aver'][swt_init:swt_final])
+
+if np.isnan(psurf):
+    psurf=97000
 
 # copy from the main run folder
 shutil.copytree(blank_run,w_dir+'/k_'+str(k)+'/c_1')
@@ -1296,13 +1299,15 @@ for i in range(1,k+1):
     write_forcings(data2,m_dir+'/c_'+str(i)+'/input/case_setups/arm_forcings.in')
 
 # Initialize circulation output variables
-u_r0 = np.ones((len(tlist),))*-1
 dvpt = np.ones((len(tlist),))*-1
-u_r = np.ones((len(tlist),))*-1
+u_r = np.ones((len(tlist),nz))*-1
+u_r0 = np.ones((len(tlist),nz))*-1
 u_rz=np.ones((2,len(tlist)))*-1
 z_circh = np.ones((len(tlist),))*-1
 z_circl = np.ones((len(tlist),))*-1
 dzic = np.ones((len(tlist),))*-1
+wz_s = np.zeros((k,len(tlist),nz))
+
 
 # read in forcings
 for i in range(1,k+1):
@@ -1334,6 +1339,8 @@ for i in range(1,len(tlist)):
                 fp2.close()
             if circ_m== 'pa':
                 pa[j-1,:]=fp['p_in_Pa'][int(round(n_rest_out-1)),:,0,0]
+            if circ_m== 'eb':
+                pa[j-1,:]=wz_s[j-1,i-1,:]
 
             # load in windspeed
             if wind_cr:
@@ -1355,17 +1362,16 @@ for i in range(1,len(tlist)):
     if doflux[i]>.01:
         dThlm=np.zeros((k,thvm.shape[1]))
         dRtm=np.zeros((k,thvm.shape[1]))
-        wz=np.zeros((k,thvm.shape[1]))
         for k1 in range(k):
             for k2 in range(k1+1,k):
                 if circ_m=='ri':
                     data=rig[[k1,k2],:]
                 else:
                     data=thvm[[k1,k2],:]
-                dThlm,dRtm,wz,u_r[i],u_rz[:,i],z_circh[i],z_circl[i],dzic[i],u_r0[i],dvpt[i] = \
+                dThlm,dRtm,wz_s[:,i,:],u_r[i,:],u_rz[:,i],z_circh[i],z_circl[i],dzic[i],u_r0[i,:],dvpt[i] = \
                         circulate(data,rtms[[k1,k2],:],A[[k1,k2]],\
                         tmps[[k1,k2],:],H2[i,[k1,k2]],W[k1,k2],c_=c_ur*doflux[i],\
-                        cd_=cdirect[k1,k2,:],u_=um,l=l_het,pa=pa,urpv=u_r[i-3:i])
+                        cd_=cdirect[k1,k2,:],u_=um,l=l_het,pa=pa,urpv=u_r[i-1,:])
 
     for j in list(range(1,k+1)):
         frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
@@ -1378,7 +1384,7 @@ for i in range(1,len(tlist)):
             frcs[j]['rtm_f[kg\kg\s]'][i+1,:]=frcs[j]['rtm_f[kg\kg\s]'][i+1,:] + dRtm[j-1,:]
 
             # change from m/s to Pa/s
-            omega=w_to_omega(wz[j-1,:],frcs[j]['Press[Pa]'][i,:],tmps[j-1,:])
+            omega=w_to_omega(wz_s[j-1,i,:],frcs[j]['Press[Pa]'][i,:],tmps[j-1,:])
             #frcs[j]['omega[Pa\s]'][i,:]=frcs[j]['omega[Pa\s]'][i,:]+omega
             frcs[j]['omega[Pa\s]'][i+1,:]=frcs[j]['omega[Pa\s]'][i+1,:]+omega
 
@@ -1447,17 +1453,19 @@ for j in list(range(1,k+1)):
 
 # output circulation characteristics
 fp=nc.Dataset(w_dir+'/k_'+str(k)+'/clusters.nc','r+')
+fp.createDimension('z',size=nz)
 fp.createDimension('xy',size=2)
 fp.createDimension('t_model',size=len(tlist))
 fp.createVariable('t_model','d',dimensions=('t_model'))
-fp.createVariable('u_r','d',dimensions=('t_model'))
+fp.createVariable('u_r','d',dimensions=('t_model','z'))
 fp.createVariable('z_circh','d',dimensions=('t_model'))
 fp.createVariable('z_circl','d',dimensions=('t_model'))
 fp.createVariable('dz_circ','d',dimensions=('t_model'))
 fp.createVariable('flow_dir','d',dimensions=('clst','clst','xy'))
 fp.createVariable('u_rz','d',dimensions=('clst','t_model'))
-fp.createVariable('u_r0','d',dimensions=('t_model'))
+fp.createVariable('u_r0','d',dimensions=('t_model','z'))
 fp.createVariable('dvpt','d',dimensions=('t_model'))
+fp.createVariable('wbar','d',dimensions=('clst','t_model','z'))
 fp['u_r'][:]=u_r[:]
 fp['z_circh'][:]=z_circh[:]*dz
 fp['z_circl'][:]=z_circl[:]*dz
@@ -1466,6 +1474,7 @@ fp['flow_dir'][:]=cdirect[:]
 fp['u_rz'][:]=u_rz[:]
 fp['u_r0'][:]=u_r0[:]
 fp['dvpt'][:]=dvpt[:]
+fp['wbar'][:]=wz_s[:]
 
         
 
