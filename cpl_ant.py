@@ -13,6 +13,8 @@ import datetime
 import sklearn.cluster
 import netCDF4 as nc
 import shutil
+import scipy as sci
+import scipy.ndimage
 from scipy.stats import beta
 from inspect import currentframe, getframeinfo
 
@@ -29,7 +31,9 @@ T0          = 300 # reference temperature; matched to CLUBB
 hggt        = 6 # hours after start to use surface as basis for l_het
 vert_circ   = True # if true, will include vertical circulation
 no_tq_frc   = False # if true, will set thermal and moisture forcings to 0
-
+use_LES_frc = True  # instead of varanal, use the homogeneous LES as forcings*
+                    # (only applies to horizontal velocities) 
+use_LES_snd = False  # instead of varanal, use the homogeneous LES as soundings*
 
 # directories
 sfc_dir   = '/home/tsw35/soteria/clubb/data/surfaces_5k/'
@@ -37,50 +41,49 @@ clubb_dir = '/home/tsw35/tyche/clubb/' # directory of clubb run folders
 blank_run = '/home/tsw35/soteria/clubb/clubb_scripts/run_/' # a clean run folder to copy
 cbin_dir  = '/home/tsw35/soteria/software/CLUBB/bin/' # bin for clubb
 met_dir   = '/home/tsw35/soteria/clubb/data/sgp60varanarap_2012-2019.nc' #forcing
+les_dir   = '/home/tsw35/tyche/data/LES_1C/'
+lesp_dir  = '/home/tsw35/tyche/data/LES_FULL/'
 tune_o    = 'X' #'/home/tsw35/soteria/clubb/clubb_scripts/tunable_param/g0.4c110.4c80.5' 
             # 'X' overwrite tunable parameters
 
 
 #### DEFAULTS ####
-k       = 2 # number of clusters
+k       = 1 # number of clusters
 nx      = 20 # number of gridcells in each direction
 dx      = 5000  # resolution of surface grid in meters
 dz      = 40 # dz
 zmax    = 12000
 dzc     = 1000
-nz      = int(np.floor(zmax/dz)+1)
-stdate  = '2017-06-14T10:00:00.000'# start date iso format T10:00:00.000 2017-07-16T11:00:00.000
-enddate = '2017-06-15T03:00:00.000'# end date iso format 2017-07-17T03:00:00.000
-dirname = 'test_cpl2'
-c_ur    = 12
-no_wind_frc = False # if true, will ignore forcings for wind velocity
-l_het   = -2 # Length of heterog. in meters; -1: calculate, -2: || to wind
+stdate  = '2016-06-25T12:00:00.000'# start date iso format T10:00:00.000 2017-07-16T11:00:00.000
+enddate = '2016-06-26T04:00:00.000'# end date iso format 2017-07-17T03:00:00.000
+dirname = 'test_cpl'
+no_wind_frc = False # if true, will ignore forcings for horiz. wind velocity
+no_omega_frc = False # if true, will ignore vertical wind velocity forcings
+l_het   = -1 # Length of heterog. in meters; -1: calculate, -2: || to wind
 c_7     = -1 # default is non constant (-1), bouancy term, .3 to .8 is listed range
 flux_on = 1 # turn on cirrculation flux (1) turn off (0)
 wind_cr = 1 # turn on directional wind corrections to flux (1) turn off (0)
 inc     = 1 # increase in vertical windspeed relative to what it should be by volume balance
-cut_off = .95 # cuttoff for correlation function heterogeneity
+cut_off = .05 # cuttoff for correlation function heterogeneity
+keep_on = True # keeps flux on past the reduction of incomming net radiation below min_rad
 
 ## CIRCULATION PARAMETERS ##
 # METHODS
-# ri     : this uses the richardson number to determine circulation height;
-#          in this case, cc1 is the richardson number cuttoff; cc1=.5
-# vpt1   : this is the old vpt case and is innacurate and depricated; c11=0
-# vpt2   : circulation is determined by cummulative value of gradient of vpt
-#          c11 is the cuttoff value; circulation top is this cuttoff in hot
-#          and circulation bottom is cuttoff in cold column.
-# pa     : circulation height in hot determined by cumulative value of grad
-#          of vpt. Pressure guides everything else following BJERKNES
-#          circulation theorem
 # den    : this is the method used for AGU 2022/AMS 2023 and is best
 #          described in those contexts
 # denv_s : newest method, similar to den except the rise of the parcel is
 #          determined by the surface temperature differece 
 # denv_a : newest method, similar to den except the rise of the parcel is
 #          determined by the near surface air temperature differece 
-circ_m  = 'den' # circulation method
-cc1     = 2.8 # has different meanings depending on the circulation method
+circ_m  = 'denv_ds' # circulation method
+cc1     = .85 # has different meanings depending on the circulation method
 cc2     = 1 # power law for u_r
+c_ur    = 1.35
+dvptbylvl = True # when false, one vpt diff will be computed for profile
+                 #      and a adjustment factor will be applied
+                 # when true, vpt diff will be computed by level
+
+
 #### PARSE ####
 
 prs = argparse.ArgumentParser(description='Short sample app')
@@ -88,6 +91,7 @@ prs = argparse.ArgumentParser(description='Short sample app')
 prs.add_argument('-k', action='store', dest='k', type=int, default=k)
 prs.add_argument('-n', action='store', dest='nx', type=int, default=nx)
 prs.add_argument('-d', action='store', dest='dx', type=int, default=dx)
+prs.add_argument('-z', action='store', dest='dz', type=int, default=dz)
 prs.add_argument('-i', action='store', dest='dir', default=dirname)
 prs.add_argument('-s', action='store', dest='start', default=stdate)
 prs.add_argument('-e', action='store', dest='end',default=enddate)
@@ -129,8 +133,10 @@ inc     = args.inc
 circ_m  = args.cm
 cc1     = args.cc1
 cc2     = args.cc2
+dz      = args.dz
 
 #### EXTRAS ####
+nz  = int(np.floor(zmax/dz)+1)
 dzi = int(np.floor(dzc/dz))
 n_rest = int(np.floor(s_rest/delta_t)) # number of timesteps between restart
 if k == 1:
@@ -198,69 +204,11 @@ def RH(r,P,T):
     #print(str(e)+','+str(esat))
     return(e/esat)
 
-
-#### SOLVE ENERGY EQUATION ONE TIMESTEP ####
-def ebsolve(ke0,keh,kev1,bb,M,dt_c,w0,dz_=dz):
-    L=(ke0+keh+kev1)
-    rts=np.roots([dt_c,dz,-2*dt_c*(bb*dz+L/M),-2*L/M*dz])
-    out=0
-    if bb>0:
-        if L/M>0:
-            out= rts[rts>0][0]
-        elif L<0:
-            if (np.abs(L/M)>=bb):
-                print('-L/M>bb: ',end='')
-                out=0
-            else:
-                out=np.max(rts[rts>0])
-        elif M<0:
-            print('+bb-M  : ',end='')
-            out=0
-    elif bb<=0:
-        if L/M>0:
-            out= rts[rts>0][0]
-            be=dz*dt_c*np.real(out)*bb*M/(dz+np.real(out)*dt_c)
-            if (w0<out)&(np.abs(be)>(keh+kev1))&((keh+kev1)>0):
-                out=0
-            print(rts)
-        else:
-            print('-bb-L/M: ',end='')
-            out= 0
-    print(np.real(out),end='')
-    print('::: ke0 '+str(ke0)+'  keh '+str(keh)+'  kev1 '+str(kev1)+'  bb '+str(dz*dt_c*np.real(out)*bb*M/(dz+np.real(out)*dt_c))+'  M '+str(M))
-    return np.real(out)
-
-"""
-def ebsolve(ke0,keh,kev1,bb,arho,dt_c,dz_=dz):
-    #print('ke0 '+str(ke0)+'  keh '+str(keh)+'  kev1 '+str(kev1)+'  bb '+str(bb))
-    L=(ke0+keh+kev1)/arho
-    w0=np.sqrt(ke0/arho)
-    rts=np.roots([dt_c,dz,-bb/arho,-L])
-    out=0
-    if bb>0:
-        if L>0:
-            out= rts[rts>0][0]
-        else:
-            if(np.sum(np.imag(rts)==0)==1):
-                out= 0
-            else:
-                for rt in rts[rts>0]:
-                    be=bb*rt
-                    if(np.abs(keh+kev1)>be):
-                        if rt<w0:
-                            out= rt
-                    elif(np.abs(keh+kev1)<be):
-                        if rt>w0:
-                            out= rt
-    elif bb>=0:
-        if L>0:
-            out= rts[rts>0][0]
-        else:
-            out= 0
-    #print('\t'+str(rts))
-    return np.real(out)
-"""
-
+#### COMPUTE ADVECTIVE LENGTHSCALE ####
+def adv_L(wd_,Axx_):
+    x1=Axx_[0]/wd_
+    x2=Axx_[1]/wd_
+    return (x1+x2)/2
 
 
 #### COMPUTE CIRCULATION TENDENCIES ####
@@ -296,11 +244,8 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
     u_ : float(2)
         2 component mean wind
     cd_: float(2)
-        2 component direction of circulation
+        percentage of the circulation flow that is oriented along x and y
     """
-    
-    if circ_m == 'eb2':
-        return eb_circulate2(vpt,rtm,Axx,T,H,wd,c_,T0,l,dz_,dzi_,u_,cd_,cc1,cc2,circ_m,pa,urpv)
 
     # create empty outputs
     nz_  = vpt.shape[1]
@@ -308,6 +253,9 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
     dThm = np.zeros((2,nz_))
     dRtm = np.zeros((2,nz_))
     wbar = np.zeros((2,nz_))
+    urr  = np.zeros((2,nz))
+    ursout=np.zeros((nz_,))
+    pursout=np.zeros((nz_,))
 
     # determine the high and low sensible heat flux column
     sgn = (H[1]-H[0])/np.abs(H[1]-H[0])
@@ -345,7 +293,7 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
             minzh=np.argmax((vpt[k_hi,:]-vpt[k_lo,:])<0)-1
         except:
             print('E00: No Crossover point in VPT profiles detected')
-            return dThm, dRtm, wbar, 0, [0,0], 0,0,0,0,0
+            return dThm, dRtm, wbar, 0, urr, 0,0,0,0,0
         minzl=minzh
 
         l_maxzl=min(maxzl-minzl,minzl-1)
@@ -356,19 +304,85 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
             minzh=np.argmax((vpt[k_hi,:]-vpt[k_lo,:])<0)-1
         except:
             print('E00: No Crossover point in VPT profiles detected')
-            return dThm, dRtm, wbar, 0, [0,0], 0,0,0,0,0
+            return dThm, dRtm, wbar, 0, urr, 0,0,0,0,0
         minzl=minzh
         ctf_vpt=vpt[k_lo,minzh+1]-vpt[k_hi,minzh+1]
         maxzh=np.argmax((vpt[k_lo,minzh+1:-1]-vpt[k_hi,minzh+1:-1])<ctf_vpt*.5)+minzh
         maxzl=maxzh
         l_maxzl=minzl-2
         l_maxzh=l_maxzl
-    
+
+    elif circ_m == 'denv_a':
+        # cum vpt circ height based on near sfc T; then density differential
+        vpthg=np.gradient(vpt[k_hi,0:int(6000/dz)])
+        vpthg[0:5]=0
+        vpthgc=np.cumsum(vpthg)
+        cdT = cc1*(vpt[k_hi,0]-vpt[k_lo,0])
+        print(cdT)
+        maxzh=np.argmin(np.abs(vpthgc-cdT))
+        vpt_hm=vpt[k_hi,maxzh]
+        maxzl=np.argmax((vpt[k_lo,:]-vpt_hm)>0)-1
+        try:
+            minzh=np.argmax((vpt[k_hi,:]-vpt[k_lo,:])<0)-1
+        except:
+            print('E00: No Crossover point in VPT profiles detected')
+            return dThm, dRtm, wbar, 0, urr, 0,0,0,0,0
+        minzl=minzh
+
+        l_maxzl=min(maxzh-minzl,minzl-1)
+        l_maxzh=l_maxzl
+
+    elif circ_m == 'denv_ds':
+        # cum vpt circ height based on sfc T; then density differential
+        vpthg=np.gradient(vpt[k_hi,0:int(6000/dz)])
+        vpthg[0:5]=0
+        vpthgc=np.cumsum(vpthg)
+        cdT = cc1*pa*2
+        print(cdT)
+        maxzh=np.argmin(np.abs(vpthgc-cdT))
+        vpt_hm=vpt[k_hi,maxzh]
+        maxzl=np.argmax((vpt[k_lo,:]-vpt_hm)>0)-1
+        try:
+            minzh=np.where((vpt[k_hi,:]-vpt[k_lo,:])<0)[0][0]-1
+        except:
+            print('E00: No Crossover point in VPT profiles detected')
+            return dThm, dRtm, wbar, 0, urr, 0,0,0,0,0
+        if minzh<=0:
+            print('E00: No Crossover point in VPT profiles detected')
+            return dThm, dRtm, wbar, 0, urr, 0,0,0,0,0
+        
+        minzl=minzh
+
+        l_maxzl=min(maxzh-minzl,minzl-1)
+        l_maxzh=l_maxzl
+
+    elif circ_m == 'denv_s':
+        # cum vpt circ height based on sfc T; then density differential
+        vpthg=np.gradient(vpt[k_hi,0:int(6000/dz)])
+        vpthg[0:5]=0
+        vpthgc=np.cumsum(vpthg)
+        cdT = cc1*(pa[k_hi]-pa[k_lo])
+        print(cdT)
+        maxzh=np.argmin(np.abs(vpthgc-cdT))
+        vpt_hm=vpt[k_hi,maxzh]
+        maxzl=np.argmax((vpt[k_lo,:]-vpt_hm)>0)-1
+        try:
+            minzh=np.argmax((vpt[k_hi,:]-vpt[k_lo,:])<0)-1
+        except:
+            print('E00: No Crossover point in VPT profiles detected')
+            return dThm, dRtm, wbar, 0, urr, 0,0,0,0,0
+        minzl=minzh
+
+        l_maxzl=min(maxzh-minzl,minzl-1)
+        l_maxzh=l_maxzl
+
+
+
     # check positive circulation thickness for all levels
     thick = min(maxzh-minzh,maxzl-minzl,l_maxzh,l_maxzl)
     if thick<1:
         print('E01: Circulation has non-positive thickness')
-        return dThm, dRtm, wbar, 0, [0,0], 0,0,0,0,0
+        return dThm, dRtm, wbar, 0, urr, 0,0,0,0,0
 
     # create a filter that can smooth the circulation
     # adj_l is for lower, adj_u is for upper (recirc)
@@ -393,57 +407,49 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
     # check if ur is positive
     if (Thi-Tlo) < 0:
         print('E02: Surface temperature differential opposes flux diff.')
-        return dThm, dRtm, wbar, 0, [0,0], 0,0,0,0,0
+        return dThm, dRtm, wbar, 0, urr, 0,0,0,0,0
     
-    ur = c_*((Thi-Tlo)/T0)**(cc2)*9.81**(.5)*l**(.5)
-    pur = ur
+    urs = c_*((vpt[k_hi,0:l_maxzh]-vpt[k_lo,0:l_maxzl])/T0)**(cc2)*9.81**(.5)*l**(.5)
+    purs = urs.copy()
 
-    # adjust ur for mean velocity
-    if not ((u_[0]==0) and (u_[1]==0)):
-        circ_dir=cd_
-        flow=circ_dir/np.sqrt(circ_dir[0]**2+circ_dir[1]**2)*ur
-        adj_flow = flow-np.dot(np.dot(flow,u_)/np.dot(u_,u_),u_)
-        ur=np.sqrt(adj_flow[0]**2+adj_flow[1]**2)
+    pursout[0:l_maxzl]=purs*adj_l
+    pursout[minzl:maxzl]=-np.mean(purs)*adj_u
+
+    
+    # adjust ur for background wind direction
+    urs2 = np.array([urs,urs])
+    udif=urs2-np.abs(u_[:,0:l_maxzl])
+    udif[udif<0]=0
+    if (np.sum(udif[0,:])==0) and (np.sum(udif[1,:])==0):
+        print('E03: Ur ['+str(np.max(purs))+'] overwhelmed by background wind')
+        return dThm, dRtm, wbar, 0, urr, 0,0,0,pursout,0
+    urr[:,0:l_maxzl]=(urs2-udif)/(urs2+.001)
+    urs=udif[0,:]*cd_[0]+udif[1,:]*cd_[1]
+    
 
     # check if ur change is reasonable
     urpv=np.max(urpv)
-    if urpv<0:
-        urpv=0
-    if (ur-urpv)>.5:
-        ur=urpv+.5
+    urs[urs>(urpv+.5)]=urpv+.5
     
     # compute horizontal circulation
-    vflux = wd*dz_*ur*adj_l
-    vflux_u = wd*dz_*ur*adj_u
-    vflux_uhc = wd*dz_*ur*adj_uhc 
-    vflux_lch = wd*dz_*ur*adj_lch
+    vflux = wd*dz_*urs*adj_l
+    vflux_u = np.mean(vflux)*adj_u
+    vflux_uhc = np.mean(vflux)*adj_uhc 
+    vflux_lch = wd*dz_*urs*adj_lch
 
     Tl_p=np.interp(np.linspace(0,l_maxzh-1,l_maxzh),np.linspace(0,l_maxzh-1,l_maxzl),T[k_lo,0:l_maxzl])
     Rl_p=np.interp(np.linspace(0,l_maxzh-1,l_maxzh),np.linspace(0,l_maxzh-1,l_maxzl),rtm[k_lo,0:l_maxzl])
     
-    L=25000
+    L=adv_L(wd,Axx)
     
-    #dThm[k_hi,0:l_maxzh]=(vflux*Tl_p+Axx[k_hi]*dz_*T[k_hi,0:l_maxzh])/\
-    #                  (vflux+Axx[k_hi]*dz_)-T[k_hi,0:l_maxzh]
-    #dRtm[k_hi,0:l_maxzh]=(vflux*Rl_p+Axx[k_hi]*dz_*rtm[k_hi,0:l_maxzh])/\
-    #                  (vflux+Axx[k_hi]*dz_)-rtm[k_hi,0:l_maxzh]
-    dThm[k_hi,0:l_maxzh]=(Tl_p-T[k_hi,0:l_maxzh])/L*ur*adj_l
-    dRtm[k_hi,0:l_maxzh]=(Rl_p-rtm[k_hi,0:l_maxzh])/L*ur*adj_l
+    dThm[k_hi,0:l_maxzh]=(Tl_p-T[k_hi,0:l_maxzh])/L*urs*adj_l
+    dRtm[k_hi,0:l_maxzh]=(Rl_p-rtm[k_hi,0:l_maxzh])/L*urs*adj_l
 
-    # compute recirculation as advection
     Th_p=np.interp(np.linspace(minzl,maxzl-1,maxzl-minzl),np.linspace(minzh,maxzh-1,maxzh-minzh),T[k_hi,minzh:maxzh])
     Rh_p=np.interp(np.linspace(minzl,maxzl-1,maxzl-minzl),np.linspace(minzh,maxzh-1,maxzh-minzh),rtm[k_hi,minzh:maxzh])
     
-    dThm[k_lo,minzl:maxzl]=dThm[k_lo,minzl:maxzl] + (Th_p-T[k_lo,minzl:maxzl])/L*ur*adj_u
-    dRtm[k_lo,minzl:maxzl]=dRtm[k_lo,minzl:maxzl] + (Rh_p-rtm[k_lo,minzl:maxzl])/L*ur*adj_u
-
-    #dThm[k_lo,minzl:maxzl]=dThm[k_lo,minzl:maxzl] +(vflux_u*Th_p+\
-    #                     Axx[k_lo]*dz_*T[k_lo,minzl:maxzl])/(vflux_u+Axx[k_lo]*dz_)-\
-    #                     T[k_lo,minzl:maxzl]
-    #dRtm[k_lo,minzl:maxzl]=dRtm[k_lo,minzl:maxzl] +(vflux_u*Rh_p+\
-    #                     Axx[k_lo]*dz_*rtm[k_lo,minzl:maxzl])/(vflux_u+Axx[k_lo]*dz_)-\
-    #                     rtm[k_lo,minzl:maxzl]
-    
+    dThm[k_lo,minzl:maxzl]=dThm[k_lo,minzl:maxzl] + (Th_p-T[k_lo,minzl:maxzl])/L*vflux_u/dz_/wd
+    dRtm[k_lo,minzl:maxzl]=dRtm[k_lo,minzl:maxzl] + (Rh_p-rtm[k_lo,minzl:maxzl])/L*vflux_u/dz_/wd
 
     # compute vertical circulation (k_hi)
     if vert_circ:
@@ -453,374 +459,26 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
         wbar[k_lo,0:l_maxzl]=-np.cumsum(vflux_lch)/Axx[k_lo]*inc
         wbar[k_lo,l_maxzl:minzl]=wbar[k_lo,l_maxzl-1]
         wbar[k_lo,minzl:maxzl]=wbar[k_lo,l_maxzl-1]+np.cumsum(vflux_u)/Axx[k_lo]*inc
+    
+    # create velocity output 
+    ursout=np.zeros((nz_,))
+    ursout[0:l_maxzl]=urs*adj_l
+    ursout[minzl:maxzl]=-np.mean(vflux)*adj_u/dz_/wd
 
-    urz =np.max(np.abs(wbar),axis=1)
     dzi_=(maxzh-minzh)*10**6+(maxzl-minzl)*10**3+l_maxzl+l_maxzh*10**(-3)
     print('maxzh: %f' %maxzh)
     print('maxzl: %f' %maxzl)
     print('minzh: %f' %minzh)
     print('minzl: %f' %minzl)
-    print('ur: %f' %ur)
-    print('urz: %f' %np.max(urz))
+    print('ur: %f' %np.max(urs))
+    print('urz: %f' %np.max(wbar))
     
 
 
-    return dThm,dRtm,wbar,ur,urz,maxzh,maxzl,dzi_,pur,Thi-Tlo
+
+    return dThm,dRtm,wbar,ursout,urr,maxzh,maxzl,dzi_,pursout,Thi-Tlo
 
 
-
-#### COMPUTE CIRCULATION TENDENCIES SS ENERGY BALANCE####
-def eb_circulate2(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],cd_=[0,0],cc1=cc1,cc2=cc2,circ_m=circ_m,pa=None,urpv=0):
-
-    # create empty outputs
-    nz_  = vpt.shape[1]
-
-    dThm = np.zeros((2,nz_))
-    dRtm = np.zeros((2,nz_))
-    wbar = np.zeros((2,nz_))
-
-    # determine the high and low sensible heat flux column
-    k_hi=1
-    k_lo=0
-
-    # compute ur 
-    Thi = vpt[k_hi,:]
-    Tlo = vpt[k_lo,:]
-
-    ur = c_*((Thi-Tlo)/T0)**(cc2)*9.81**(.5)*l**(.5)
-    pur = ur
-    sgn=(vpt[k_hi,:]-vpt[k_lo,:])/np.abs(vpt[k_hi,:]-vpt[k_lo,:]+.0000001)
-    
-
-    # adjust ur for mean velocity
-    if not ((u_[0]==0) and (u_[1]==0)):
-        circ_dir=np.array([sgn,sgn])
-        circ_dir[0,:]=circ_dir[0,:]*cd_[0]
-        circ_dir[1,:]=circ_dir[1,:]*cd_[1]
-        
-        flow=circ_dir/np.sqrt(circ_dir[0]**2+circ_dir[1]**2)*ur
-        adj_flow = np.zeros(flow.shape)
-        for x in range(nz_):
-            adj_flow[:,x] = flow[:,x]-np.dot(np.dot(flow[:,x],u_)/np.dot(u_,u_),u_)
-        ur=np.sqrt(adj_flow[0,:]**2+adj_flow[1,:]**2)*sgn
-
-    # create empty energy 
-    KE=np.zeros((2,len(ur)))
-    KEh=np.zeros((2,len(ur)))
-    BE=np.zeros((2,len(ur)))
-
-    # first level
-    KEh[k_hi,0]=.5*W[0,1]*np.mean(ur[0:5])**3*dz_
-    KEh[k_lo,0]=-.5*W[0,1]*np.mean(ur[0:5])**3*dz_
-    
-    KE[k_hi,0]=KEh[k_hi,0]
-    KE[k_lo,0]=KEh[k_lo,0]
-    wbar[k_hi,0]=np.cbrt(2*KE[k_hi,0]/Axx[k_hi])
-    wbar[k_lo,0]=np.cbrt(2*KE[k_lo,0]/Axx[k_lo])
-
-    # going up
-    maxzh=0
-    zcrit=0
-    for x in range(1,nz_):
-        print(str(ur[x])[0:5]+' ',end='')
-        if x<=5:
-            KEh[k_hi,x]=.5*W[0,1]*np.mean(ur[0:5])**3*dz_
-            KEh[k_lo,x]=-.5*W[0,1]*np.mean(ur[0:5])**3*dz_
-        else:
-            KEh[k_hi,x]=.5*W[0,1]*np.mean(ur[x])**3*dz_
-            KEh[k_lo,x]=-.5*W[0,1]*np.mean(ur[x])**3*dz_
-        if x>4:
-            tenv=(vpt[k_hi,x-1]+vpt[k_hi,x])/2
-            tprc=vpt[k_hi,x-1]
-            wc=np.sqrt((wbar[k_hi,x-1]**2)/cc1)
-            BE[k_hi,x]=Axx[k_hi]*9.8*(tprc-tenv)/(2*tenv)*wc*dz_*cc1
-
-            tprc=vpt[k_lo,x]
-            tenv=(vpt[k_lo,x-1]+vpt[k_lo,x])/2
-            wc=np.sqrt((wbar[k_lo,x-1]**2)/cc1)
-            BE[k_lo,x]=Axx[k_lo]*9.8*(tprc-tenv)/(2*tenv)*wc*dz_*cc1
-        KE[k_hi,x]=BE[k_hi,x]+KEh[k_hi,x]+KE[k_hi,x-1]
-        wbar[k_hi,x]=np.cbrt(2*KE[k_hi,x]/Axx[k_hi])
-            
-        if ur[x]>0:
-            KE[k_lo,x]=BE[k_lo,x]+KEh[k_lo,x]+KE[k_lo,x-1]
-            if (KE[k_lo,x-1]<0) & (KE[k_lo,x]>0):
-                wbar[k_lo,x]=0
-                KE[k_lo,x]=0
-            else:
-                wbar[k_lo,x]=np.cbrt(2*KE[k_lo,x]/Axx[k_lo])
-        else:
-            if zcrit==0:
-                zcrit=x
-
-        if KE[k_hi,x]<0:
-            maxzh=x-1
-            KE[k_hi,x]=0
-            wbar[k_hi,x]=0
-            break
-    ur[wbar[k_hi,:]==0]=0
-    maxzl=maxzh
-
-    ur_tmp=ur.copy()
-    ur_tmp[0:5]=.00001
-
-    if not zcrit==np.argmin(ur_tmp>0):
-        print()
-        print('zcrit error')
-        print(zcrit)
-        print(np.argmin(ur_tmp>0))
-        print()
-    zcrit=np.argmin(ur_tmp>0)
-
-    if ur[maxzl]<0:
-        # top level cold
-        KEh[k_lo,maxzh]=np.abs(KEh[k_hi,maxzh])
-
-        KE[k_lo,maxzh]=np.abs(KEh[k_lo,0])
-        wbar[k_lo,maxzh]=np.cbrt(2*-KE[k_lo,0]/Axx[k_lo])
-        # going down
-        for x in range(maxzh-1,zcrit-1,-1):
-            KEh[k_lo,x]=np.abs(KEh[k_hi,x])
-            tenv=(vpt[k_lo,x+1]+vpt[k_lo,x])/2
-            tprc=vpt[k_lo,x+1]
-            wc=np.sqrt((wbar[k_lo,x+1]**2)/cc1)
-            BE[k_lo,x]=Axx[k_lo]*9.8*(tprc-tenv)/(2*tenv)*wc*dz_*cc1
-            KE[k_lo,x]=BE[k_lo,x]+KEh[k_lo,x]+KE[k_lo,x+1]
-            if (KE[k_lo,x]<0)&(KEh[k_lo,x]>0):
-                KE[k_lo,x]=0
-                BE[k_lo,x]=-KEh[k_lo,x]
-            wbar[k_lo,x]= np.cbrt(-2*KE[k_lo,x]/Axx[k_lo])
-    
-
-    # compute dThm and dRtm
-    mskh=ur>0
-    mskl=ur<0
-    vflx=ur[:]*wd*dz_
-    #dThm[k_hi,mskh]=(vflx[mskh]*T[k_lo,mskh]+Axx[k_hi]*dz_*T[k_hi,mskh])/(vflx[mskh]+Axx[k_hi]*dz_)-T[k_hi,mskh]
-    #dThm[k_lo,mskl]=(vflx[mskl]*T[k_hi,mskl]+Axx[k_lo]*dz_*T[k_lo,mskl])/(vflx[mskl]+Axx[k_lo]*dz_)-T[k_lo,mskl]
-
-    #dRtm[k_hi,mskh]=(vflx[mskh]*rtm[k_lo,mskh]+Axx[k_hi]*dz_*rtm[k_hi,mskh])/(vflx[mskh]+Axx[k_hi]*dz_)-rtm[k_hi,mskh]
-    #dRtm[k_lo,mskl]=(vflx[mskl]*rtm[k_hi,mskl]+Axx[k_lo]*dz_*rtm[k_lo,mskl])/(vflx[mskl]+Axx[k_lo]*dz_)-rtm[k_lo,mskl]
-    
-    urz =np.max(np.abs(wbar),axis=1)
-
-    print('maxzh: %f' %maxzh)
-    print('maxzl: %f' %maxzl)
-    print('ur_tp: %f' %ur[maxzh])
-    print('ur_0: %f' %ur[0])
-    print('ur: %f' %np.nanmax(ur))
-    print('wbar: %f' %np.nanmax(wbar))
-
-    return dThm,dRtm,wbar,ur,urz,maxzh,maxzl,dzi_,pur,0
-
-
-#### COMPUTE ENERGY BASED CIRCULATION ####
-def eb_circulate(vpt,rtm,Axx,T,H,wd,pa,c_=c_ur,T0=T0,l=l_het,dz_=dz,u_=[0,0],\
-                 cd_=[0,0],cc1=cc1,cc2=cc2,rho=0,mass=np.zeros((2,301)),KE=np.zeros((2,301))):
-
-    # create empty outputs
-    nz_  = vpt.shape[2]
-    
-    wbar=np.zeros((2,nz_))
-    dThm = np.zeros((2,nz_))
-    dRtm = np.zeros((2,nz_))
-
-    k_hi=1
-    k_lo=0
-    
-    for xx in range(5):
-        vpt[k_hi,xx,:]=vpt[k_hi,-1,:]
-    
-    sgn=(vpt[k_hi,:]-vpt[k_lo,:])/np.abs(vpt[k_hi,:]-vpt[k_lo,:]+.0000001)
-    urs = c_*(np.abs(vpt[k_hi,:]-vpt[k_lo,:])/T0)**(cc2)*9.81**(.5)*l**(.5)
-    pur = urs.copy()
-    
-    # UR STUFF LOST HERE
-    # adjust ur for mean velocity
-    if not ((u_[0]==0) and (u_[1]==0)):
-        circ_dir=np.array([sgn,sgn])
-        circ_dir[0,:]=circ_dir[0,:]*cd_[0]
-        circ_dir[1,:]=circ_dir[1,:]*cd_[1]
-        
-        flow=circ_dir/np.sqrt(circ_dir[0]**2+circ_dir[1]**2)*ur
-        adj_flow = np.zeros(flow.shape)
-        for x in range(nz_):
-            adj_flow[:,x] = flow[:,x]-np.dot(np.dot(flow[:,x],u_)/np.dot(u_,u_),u_)
-        ur=np.sqrt(adj_flow[0,:]**2+adj_flow[1,:]**2)*sgn
-
-
-    deltt=s_rest/5
-
-    # create empty energy 
-    KEh=np.zeros((2,len(ur)))
-    BE=np.zeros((2,len(ur)))
-    KEv=np.zeros((2,len(ur)))
-
-    # circulation characteristics 
-    tprc_k=np.zeros((2,len(ur))) # parcel T
-    rr=np.zeros((2,len(ur))) # parcel water
-    wc=np.zeros((2,len(ur))) # parcel velocity
-
-    for t_ in range(5):
-        print('t: '+str(t_))
-        ur=urs[t_,:]
-        if np.mean(ur[0:5])<.01:
-            maxzh=0
-            continue
-        
-
-        # First Level
-        KEh[k_hi,0]=.5*wd*dz_*(ur[0])**3*deltt*rho[k_hi,0]
-        m_in=wd*dz_*ur[0]*deltt*rho[k_lo,0]+mass[k_hi,0]
-        wc[k_hi,0]=ebsolve(KE[k_hi,0],KEh[k_hi,0],0,0,m_in,deltt,wc[k_hi,0],dz_=dz)
-        
-        # set circulation characteristics
-        rr[k_hi,0]=rtm[k_hi,0]
-        tprc_k[k_hi,0]=T[k_hi,0]
-        mass[k_hi,0]=m_in/(dz_+wc[k_hi,0]*deltt)*dz_
-        KE[k_hi,0]=mass[k_hi,0]*.5*wc[k_hi,0]**2
-        rrv=rr[k_hi,0]
-        rh = 0
-
-        for x in range(1,nz_):
-            if ur[x]>0:
-                KEh[k_hi,x]=.5*wd*dz_*ur[x]**3*deltt*rho[k_lo,x]
-            else:
-                KEh[k_hi,x]=.5*ur[x]**2*(ur[x]*deltt*rho[k_hi,x])
-            #solve for BE part and path moisture and temperature
-            tenv=(vpt[k_hi,t_,x-1]+vpt[k_hi,t_,x])/2
-            
-            if rh>1:
-                ad=9.808*(1+(2501000*rrv)/(287*tprc_k[k_hi,x-1]))/(1003.5+(2501000**2*rrv)/\
-                   (461.5*tprc_k[k_hi,x-1]**2))
-            else:
-                ad=.0098
-            tprc_k[k_hi,x]=tprc_k[k_hi,x-1]-ad*dz
-            rr[k_hi,x]=rr[k_hi,x-1]
-            mass_x=wd*dz_*ur[x]*deltt*rho[k_lo,x]
-            #if ur[x]>0:
-            #    tprc_k[k_hi,x]=(tprc_k[k_hi,x]*mass[k_hi,x-1]+T[k_hi,x]*mass_x)/(mass[k_hi,x-1]+mass_x)
-            #    rr[k_hi,x]=(rr[k_hi,x]*mass[k_hi-1,x]+rtm[k_hi,x]*mass_x)/(mass[k_hi-1,x]+mass_x)
-            
-            if cc1>0:
-                rr[k_hi,x]=(rr[k_hi,x]+rtm[k_hi,x]*dz_/cc1)/(dz_/cc1+1)
-                tprc_k[k_hi,x]=(tprc_k[k_hi,x]+T[k_hi,x]*dz_/cc1)/(dz_/cc1+1)
-            
-            rh=RH(rr[k_hi,x],pa[k_hi,x],tprc_k[k_hi,x])
-            rrvp=rrv
-            if rh>1:
-                rrv=rr[k_hi,x]/rh
-            T1=tprc_k[k_hi,x-1]*(1+.61*rrvp)*(100000/pa[k_hi,x-1])**.286
-            tprc=tprc_k[k_hi,x]*(1+.61*rrv)*(100000/pa[k_hi,x])**.286
-            
-            bb = ((tprc-vpt[k_hi,t_,x])/tenv+(T1-vpt[k_hi,t_,x-1])/tenv)*9.81
-            
-            if x<5:
-                bb=0
-
-            # solve for wc
-            m_in=wd*dz_*ur[x]*deltt*rho[k_lo,x]+mass[k_hi,x]+mass[k_hi,x-1]/dz_*wc[k_hi,x-1]*deltt
-            
-            wc[k_hi,x]=ebsolve(KE[k_hi,x],KEh[k_hi,x],KE[k_hi,x-1],bb,m_in,deltt,wc[k_hi,x],dz_=dz)
-            mass[k_hi,x]=m_in/(dz_+wc[k_hi,x]*deltt)*dz_
-            KE[k_hi,x]=mass[k_hi,x]*.5*wc[k_hi,x]**2
-            
-            if wc[k_hi,x]<=0.01:
-                maxzh=x-1
-                break
-        print(maxzh)
-        # now go down in cold
-        # First Level
-        if ur[maxzh]<0:
-            add_m=-wd*dz_*ur[maxzh]*deltt*rho[k_hi,maxzh]
-        else:
-            add_m=-wd*dz_*ur[maxzh]*deltt*rho[k_lo,maxzh]
-        KEh[k_lo,maxzh]=add_m*.5*(ur[maxzh])**2
-        m_in=add_m+mass[k_lo,maxzh]
-        wc[k_lo,maxzh]=ebsolve(KE[k_lo,maxzh],KEh[k_lo,maxzh],0,0,m_in,deltt,wc[k_lo,maxzh],dz_=dz)
-
-        # set circulation characteristics
-        rr[k_lo,maxzh]=rtm[k_lo,maxzh]
-        tprc_k[k_lo,maxzh]=T[k_lo,maxzh]
-        mass[k_lo,maxzh]=m_in/(dz_+wc[k_lo,maxzh]*deltt)*dz_
-        KE[k_lo,maxzh]=mass[k_lo,maxzh]*.5*wc[k_lo,maxzh]**2
-        rrv=rr[k_lo,maxzh]
-        rh = 0
-
-        for x in range(maxzh-1,-1,-1):
-            KEh[k_lo,x]=-.5*wd*dz_*ur[x]**3*deltt*rho[k_hi,x]
-            
-            #solve for BE part and path moisture and temperature
-            tenv=(vpt[k_lo,t_,x+1]+vpt[k_lo,t_,x])/2
-
-            if rh>1:
-                ad=9.808*(1+(2501000*rrv)/(287*tprc_k[k_lo,x+1]))/(1003.5+(2501000**2*rrv)/\
-                   (461.5*tprc_k[k_lo,x+1]**2))
-            else:
-                ad=.0098
-            tprc_k[k_lo,x]=tprc_k[k_lo,x+1]+ad*dz
-            rr[k_lo,x]=rr[k_lo,x+1]
-            mass_x=-wd*dz_*ur[x]*deltt*rho[k_lo,x]
-            if ur[x]<0:
-                tprc_k[k_lo,x]=(tprc_k[k_lo,x]*mass[k_lo,x+1]+T[k_lo,x]*mass_x)/(mass[k_lo,x+1]+mass_x)
-                rr[k_lo,x]=(rr[k_lo,x]*mass[k_lo,x+1]+rtm[k_lo,x]*mass_x)/(mass[k_lo,x+1]+mass_x)
-
-            if cc1>0:
-                rr[k_lo,x]=(rr[k_lo,x]+rtm[k_lo,x]*dz_/cc1)/(dz_/cc1+1)
-                tprc_k[k_lo,x]=(tprc_k[k_lo,x]+T[k_lo,x]*dz_/cc1)/(dz_/cc1+1)
-
-            rh=RH(rr[k_lo,x],pa[k_lo,x],tprc_k[k_lo,x])
-            if rh>1:
-                rrvp=rrv
-                rrv=rr[k_lo,x]/rh
-            T1=tprc_k[k_lo,x+1]*(1+.61*rrvp)*(100000/pa[k_lo,x+1])**.286
-            tprc=tprc_k[k_lo,x]*(1+.61*rrv)*(100000/pa[k_lo,x])**.286
-
-            bb = -((tprc-vpt[k_lo,t_,x])/tenv+(T1-vpt[k_lo,t_,x+1])/tenv)*9.81
-
-            # solve for wc
-            m_in=-wd*dz_*ur[x]*deltt*rho[k_lo,x]+mass[k_lo,x]+mass[k_lo,x-1]/dz_*wc[k_lo,x-1]*deltt
-
-            wc[k_lo,x]=ebsolve(KE[k_lo,x],KEh[k_lo,x],KE[k_lo,x+1],bb,m_in,deltt,wc[k_lo,x],dz_=dz)
-            mass[k_lo,x]=m_in/(dz_+wc[k_lo,x]*deltt)*dz_
-            KE[k_lo,x]=mass[k_lo,x]*.5*wc[k_lo,x]**2
-
-
-    # compute wbar
-    wbar[k_hi,:]=wc[k_hi,:]*mass[k_hi,:]/(Axx[k_hi]*dz_*rho[k_hi,:])
-    wbar[k_lo,:]=wc[k_lo,:]*mass[k_lo,:]/(Axx[k_lo]*dz_*rho[k_lo,:])
-
-    #make cold negative
-    wbar[k_lo,:]=-wbar[k_lo,:]
-
-    # compute dThm and dRtm
-    mskh=ur>0
-    mskl=ur<0
-    ur=np.mean(urs[:],axis=0)
-    pur=np.mean(pur[:],axis=0)
-    ur[maxzh+1:]=0
-    vflx=ur*wd*dz
-
-    dThm[k_hi,mskh]=(vflx[mskh]*T[k_lo,mskh]+Axx[k_hi]*dz_*T[k_hi,mskh])/(vflx[mskh]+Axx[k_hi]*dz_)-T[k_hi,mskh]
-    dThm[k_lo,mskl]=(vflx[mskl]*T[k_hi,mskl]+Axx[k_lo]*dz_*T[k_lo,mskl])/(vflx[mskl]+Axx[k_lo]*dz_)-T[k_lo,mskl]
-
-    dRtm[k_hi,mskh]=(vflx[mskh]*rtm[k_lo,mskh]+Axx[k_hi]*dz_*rtm[k_hi,mskh])/(vflx[mskh]+Axx[k_hi]*dz_)-rtm[k_hi,mskh]
-    dRtm[k_lo,mskl]=(vflx[mskl]*rtm[k_hi,mskl]+Axx[k_lo]*dz_*rtm[k_lo,mskl])/(vflx[mskl]+Axx[k_lo]*dz_)-rtm[k_lo,mskl]
-    
-    urz =np.max(np.abs(wbar),axis=1)
-    
-    maxzl=maxzh
-    dzi_=np.argmin(ur>=0.01)
-
-    print('maxzh: %f' %maxzh)
-    print('maxzl: %f' %maxzl)
-    print('ur_tp: %f' %ur[maxzh])
-    print('ur_0: %f' %ur[0])
-    print('ur: %f' %np.nanmax(ur))
-    print('wbar: %f' %np.nanmax(wbar))
-
-
-    return dThm,dRtm,wbar,ur,urz,maxzh,maxzl,dzi_,pur,0,mass,KE
 
 #### FIND NEAREST VALUE IN AN ARRAY ####
 def find_nearest(array, value):
@@ -941,7 +599,7 @@ def estimate_l_het(l_het,Hg_,cut=.25,samp=100000):
         cut    : percentage cuttoff for lengthscale
         Hg     : a N by N grid of the sensible heat fluxes
         samp   : how many points to sample when constructing cov matrix
-                 sample size is 10 times this when parallel to wind
+                 only applies to -1
     '''
 
     # CASE 0: Regular constant lengthscale
@@ -964,7 +622,7 @@ def estimate_l_het(l_het,Hg_,cut=.25,samp=100000):
     # CASE 1: Full heterogneeity 
     if l_het == -1:
 
-        idx = np.random.choice(len(H_flat),size=samp,replace=False)
+        idx = np.random.choice(len(H_flat),size=400,replace=False)
         H_sb = H_flat[idx]
         r_Hsb = r_flat[idx]
         c_Hsb = c_flat[idx]
@@ -975,17 +633,16 @@ def estimate_l_het(l_het,Hg_,cut=.25,samp=100000):
         Qf = a.flatten()
         hf = h.flatten()
 
-        bins = np.linspace(0,50000,51)
+        bins = np.linspace(2500,75000-2500,15)
         means=np.zeros((len(bins)-1,))
         for i in range(len(bins)-1):
             means[i]=np.mean(Qf[(hf>bins[i])&(hf<bins[i+1])])
 
-        l_het_ = bins[0:-1][means<=(cut*means[0])][0]
-        
+        l_het_ = np.mean(bins[0:-1][means<=(cut*means[0])][0:1])
+
         print('Non Dimensional Lengthscale of Heterogeneity')
         print(str(l_het_))
-        print()
-        
+        print()    
 
     # CASE 2: In Direction of Mean Wind
     elif l_het == -2:
@@ -1153,7 +810,35 @@ def estimate_l_het(l_het,Hg_,cut=.25,samp=100000):
         print('')
     return l_het_
 
-
+#### COMPUTE DIRECTION OF EACH CONNECTION ####
+def circdir(cgrid):
+    Wd = np.zeros((2,2))
+    tmp=np.zeros((4,)) 
+    # col connections [east west flow]
+    for i in range(nx):
+        for j in range(nx-1):
+            c_1=cgrid[i,j]
+            c_2=cgrid[i,j+1]
+            if c_1==c_2:
+                continue
+            elif c_1==0:
+                tmp[0]=tmp[0]+1
+            else:
+                tmp[2]=tmp[2]+1
+    # row connections [north south flow]
+    for j in range(nx):
+        for i in range(nx-1):
+            c_1=cgrid[i,j]
+            c_2=cgrid[i+1,j]
+            if c_1==c_2:
+                continue
+            elif c_1==0:
+                tmp[3]=tmp[3]+1
+            else:
+                tmp[1]=tmp[1]+1
+    Wd[:]=np.sum(tmp)*dx
+    circ_d=np.array([tmp[0]+tmp[2],tmp[1]+tmp[3]])/np.sum(tmp)
+    return circ_d,Wd
 
 ##############################################################################
 
@@ -1242,6 +927,12 @@ for line in fp:
         psfcline='p_sfc = '+str(int(psurf))+'.e2'+'    ! Pressure at model '+\
                  'base              [Pa]'
         lines.append(psfcline+'\n')
+    elif line[0:10]=='l_uv_nudge':
+        if no_wind_frc:
+            luvln='l_uv_nudge = .false.'
+        else:
+            luvln='l_uv_nudge = .true.'
+        lines.append(luvln+'\n')
     else:
         lines.append(line)
 fp.close()
@@ -1311,6 +1002,13 @@ for i in list(range(2,k+1)):
     os.symlink(cbin_dir+'clubb_standalone',bindir+'clubb_standalone')
 
 
+
+
+# ------------------------- #
+# SURFACE DATA and FORCINGS #
+# ------------------------- #
+# Read in and modify the external forcings and surface data
+
 # Read in the surface data
 # assume data is hourly 
 print('... read in surface data',flush=True)
@@ -1322,6 +1020,11 @@ lwg,lwv  = read_sfc_data('lw',nt,stdt)
 #lat_g,latv = read_sfc_data('',1,stdt,sfc_dir+'jsslatgrid_02')
 Tsfcv = (lwv/(5.67*10**(-8)))**(1/4)
 Tsfcg = (lwg/(5.67*10**(-8)))**(1/4)
+
+Tsfc_std=[]
+for t in range(nt-1):
+    Tsfc_std.append(np.std(Tsfcv[t,:]))
+
 
 print('WRITE SURFACE FILES',flush=True)
 
@@ -1340,6 +1043,21 @@ print('...Calculate Lengthscale of Heterogeneity',flush=True)
 Hgg = Hg[hggt,:,:]
 l_het = estimate_l_het(l_het,Hgg,cut=cut_off)
 
+# pull in LES pressure if needed
+if use_LES_frc:
+    les_day=stdt.strftime('%Y%m%d')
+    lesfold=lesp_dir+'fr2_'+les_day+'_01/'
+    pLES=np.zeros((nt,226))
+    filelist=os.listdir(lesfold)
+    filelist.sort()
+    for t in range(nt):
+        if t==0:
+            fp=nc.Dataset(lesfold+filelist[0],'r')
+        elif t>=len(filelist):
+            fp=nc.Dataset(lesfold+filelist[-1],'r')
+        else:
+            fp=nc.Dataset(lesfold+filelist[t],'r')
+        pLES[t,:]=100000-fp['AVP_P'][0,:]
 
 # extend arm_forcing.in
 nz_forcing = 37 #number of levels in original forcing file
@@ -1347,6 +1065,24 @@ for j in list(range(1,k+1)):
     frc_path = w_dir+'/k_'+str(k)+'/c_'+str(j)+\
                    '/input/case_setups/arm_forcings.in'
     data = read_forcings(frc_path)
+    if use_LES_frc:
+        les_day=stdt.strftime('%Y%m%d')
+        lesfile=les_dir+'trimfr2_'+les_day+'_01.nc'
+        fplm=nc.Dataset(lesfile,'r')
+        uu = fplm['u'][:]
+        uu=sci.ndimage.filters.gaussian_filter(uu,[0,10])
+        vv = fplm['v'][:]
+        vv=sci.ndimage.filters.gaussian_filter(vv,[0,10])
+        for t in range(len(data['time'][:])):
+            ps=100000-data['Press[Pa]'][1,:]
+            lesidx=t*6+1
+            if lesidx>=uu.shape[0]:
+                data['vm_ref[m\s]'][t,:]=np.interp(ps,pLES[t,:],vv[-1,:])
+                data['um_ref[m\s]'][t,:]=np.interp(ps,pLES[t,:],uu[-1,:])
+            else:
+                data['vm_ref[m\s]'][t,:]=np.interp(ps,pLES[t,:],vv[lesidx,:])
+                data['um_ref[m\s]'][t,:]=np.interp(ps,pLES[t,:],uu[lesidx,:])
+
     tmin = data['time'][0]
     tmax = data['time'][-1]
     nt_frc = (tmax-tmin)/(n_rest*delta_t)+1
@@ -1355,18 +1091,68 @@ for j in list(range(1,k+1)):
     for d in data.keys():
         if d == 'time':
             data2[d]=times_frc
-        elif ((d == 'vm_ref[m\s]') or (d == 'omega[Pa\s]') or (d == 'um_ref[m\s]')) and no_wind_frc:
+        elif ((d == 'vm_ref[m\s]') or (d == 'um_ref[m\s]')) and no_wind_frc:
             data2[d]=np.ones((int(nt_frc),nz_forcing))*-999.9
+        elif ((d == 'omega[Pa\s]') and no_omega_frc):
+            data2[d]=np.zeros((int(nt_frc),nz_forcing))
         elif ((d == 'T_f[K\s]') or (d == 'rtm_f[kg\kg\s]')) and no_tq_frc:
             data2[d]=np.zeros((int(nt_frc),nz_forcing))
         else:
             data2[d]=np.zeros((int(nt_frc),nz_forcing))
             for l in range(nz_forcing):
                 data2[d][:,l]=np.interp(times_frc,data['time'],data[d][:,l])
-    
+        
+
+
     # save full structure aka "original" and other
     write_forcings(data2,frc_path)
     write_forcings(data2,w_dir+'/arm_forcings_o.in')
+
+
+# modify sounding
+if use_LES_snd:
+    for j in list(range(1,k+1)):
+        # open files and such
+        snd_path= w_dir+'/k_'+str(k)+'/c_'+str(j)+\
+                   '/input/case_setups/arm_sounding.in'
+        fp = open(snd_path,'w')
+        les_day=stdt.strftime('%Y%m%d')
+        lesfile=les_dir+'trimfr2_'+les_day+'_01.nc'
+        fplm=nc.Dataset(lesfile,'r')
+        
+        # read in data
+        l_z    = fplm['z'][1,:]
+        l_thlm = fplm['thl'][1,:]
+        l_qv   = fplm['qv'][1,:]
+        l_u    = fplm['u'][1,:]
+        l_v    = fplm['v'][1,:]
+        l_w    = fplm['w'][1,:]
+        # move l_w to correct grid
+        l_w = (l_w[0:-1]+l_w[1:])/2
+        
+        # smooth values
+        l_thlm=sci.ndimage.filters.gaussian_filter(l_thlm,10)
+        l_qv=sci.ndimage.filters.gaussian_filter(l_qv,10)
+        l_v=sci.ndimage.filters.gaussian_filter(l_v,10)
+        l_u=sci.ndimage.filters.gaussian_filter(l_u,10)
+        l_w=sci.ndimage.filters.gaussian_filter(l_w,10)
+
+        # begin writing
+        fp.write('! The vertical coordinate is entered in the first column'+\
+                 ' as height (z[m]) or pressure (Press[Pa]).\n')
+        fp.write('! Temperature can be entered as liquid water potential'+\
+                 ' temperature (thlm[K]), potential temperature (thm[K]),'+\
+                 ' or absolute temperature(T[K]).\n')
+        fp.write('! Prescribed, time-independent vertical velocity can be'+\
+                 ' entered as velocity (w[m\s]) or pressure velocity (omega[Pa\s])\n')
+        fp.write('! In all cases, missing values are denoted by -999.9\n')
+        fp.write('z[m]    thlm[K]  rt[kg\kg]  u[m\s]  v[m\s]'+\
+                 '  w[m\s]  ug[m\s]   vg[m\s]\n')
+        for zi_ in range(len(l_z)):
+            tmp='%.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f\n' %\
+            (l_z[zi_],l_thlm[zi_],l_qv[zi_],l_u[zi_],l_v[zi_],l_w[zi_],-999.9,-999.9)
+            fp.write(tmp)
+        fp.close()
 
 
 # ------- #
@@ -1417,8 +1203,37 @@ for j in list(range(1,k+1)):
         tmp = '%.2f %.2f %.2f %.2f\n' % (ts,lh,sh,tskin)
         fp.write(tmp)
     fp.close()
-    
 
+# compute fraction that each cluster occupies
+clst_frac = np.zeros((k,))
+for i in range(k):
+    clst_frac[i]=np.sum(k_masks[:]==i)/k_masks.size
+
+clst_2d = np.reshape(k_masks[:,:],(nt,nx,nx))
+
+# compute the width of the connecting surface 
+if k>1:
+    cdirect,W=circdir(clst_2d[0,:,:])
+else:
+    W=np.ones((k,k))*float('nan')
+    cdirect=[float('nan'),float('nan')]
+
+# compute the sensible heat flux of each cluster
+H_clst = np.zeros((nt,k))
+tskin_clst = np.zeros((nt,k))
+for i in range(k):
+    for t in range(nt):
+        H_clst[t,i]=np.mean(Hg[t,:,:][clst_2d[t,:,:]==i])
+
+for i in range(k):
+    for t in range(nt):
+        tskin_clst[t,i]=np.mean(Tsfcg[t,:,:][clst_2d[t,:,:]==i])
+
+print(np.mean(H_clst,axis=0))
+
+# compute the area of each cluster
+A = clst_frac*nx*nx*dx*dx
+#sys.exit()
 
 # --------------- #
 # OUTPUT CLUSTERS #
@@ -1429,6 +1244,7 @@ fp.createDimension('t',size=nt)
 fp.createDimension('lat',size=nx)
 fp.createDimension('lon',size=nx)
 fp.createDimension('clst',size=k)
+fp.createDimension('xy',size=2)
 fp.createVariable('W','d',dimensions=('clst','clst'))
 fp.createVariable('cluster','d',dimensions=('t','lon','lat'))
 fp.createVariable('tskin','d',dimensions=('t','lon','lat'))
@@ -1436,56 +1252,17 @@ fp.createVariable('H','d',dimensions=('t','lon','lat'))
 fp.createVariable('LE','d',dimensions=('t','lon','lat'))
 fp.createVariable('frac','d',dimensions=('clst'))
 fp.createVariable('H_clst','d',dimensions=('t','clst'))
+fp.createVariable('W_frac','d',dimensions=('xy'))
 
-clst_2d = np.reshape(k_masks[:,:],(nt,nx,nx))
 fp['tskin'][:]=Tsfcg[:]
 fp['cluster'][:]=clst_2d[:]
 fp['H'][:]=Hg[:]
-fp['LE'][:]=Lg[:]
-
-# compute fraction that each cluster occupies
-clst_frac = np.zeros((k,))
-for i in range(k):
-    clst_frac[i]=np.sum(k_masks[:]==i)/k_masks.size
 fp['frac'][:]=np.array(clst_frac)[:]
-
-# compute the width of the connecting surface 
-W = np.zeros((k,k))
-cdirect = np.zeros((k,k,2))
-if k>=2:
-    for i in range(nx):
-        for j in range(nx):
-            cl = int(clst_2d[0,i,j])
-            if i>0:
-                cl_2 = int(clst_2d[0,i-1,j])
-                W[cl,cl_2]=W[cl,cl_2]+dx
-                cdirect[cl,cl_2,1]=cdirect[cl,cl_2,1]-1
-            if i<(nx-1):
-                cl_2 = int(clst_2d[0,i+1,j])
-                W[cl,cl_2]=W[cl,cl_2]+dx
-                cdirect[cl,cl_2,1]=cdirect[cl,cl_2,1]+1
-            if j>0:
-                cl_2 = int(clst_2d[0,i,j-1])
-                W[cl,cl_2]=W[cl,cl_2]+dx
-                cdirect[cl,cl_2,0]=cdirect[cl,cl_2,0]-1
-            if j<(nx-1):
-                cl_2 = int(clst_2d[0,i,j+1])
-                W[cl,cl_2]=W[cl,cl_2]+dx
-                cdirect[cl,cl_2,0]=cdirect[cl,cl_2,0]+1
+fp['LE'][:]=Lg[:]
 fp['W'][:] = W[:]
-
-# compute the sensible heat flux of each cluster
-H_clst = np.zeros((nt,k))
-for i in range(k):
-    for t in range(nt):
-        H_clst[t,i]=np.mean(fp['H'][t,:,:][fp['cluster'][t,:,:]==i])
 fp['H_clst'][:]=H_clst[:]
-
-print(np.mean(H_clst,axis=0))
-
-# compute the area of each cluster
-A = clst_frac*nx*nx*dx*dx
-#sys.exit()
+fp['W_frac'][:]=cdirect[:]
+fp['W'][:]=W[:]
 
 ##############################################################################
 
@@ -1498,6 +1275,15 @@ tlist = list(range(int(t_init),int(t_final),int(round(delta_t*n_rest))))
 #interpolate shortwave down
 tlistsw=list(range(int(t_init),int(t_final),3600))
 sw_dwn_interp = np.interp(tlist,tlistsw,sw_dwn)
+
+# actually the standard deviation interpolated
+Tsfc_interp =  np.interp(tlist,tlistsw,Tsfc_std)
+
+tskin_interp = np.zeros((k,len(tlist)))
+for i in range(k):
+    print(len(tlistsw))
+    print(tskin_clst[:,i].shape)
+    tskin_interp[i,:]=np.interp(tlist,tlistsw,tskin_clst[:-1,i])
 print(sw_dwn_interp)
 
 # create an array of flux activation w/ 1 active, 0 inactive, between is decay
@@ -1513,7 +1299,13 @@ if flux_on:
         if (prev<.99)&(fluxbool[i]==1):
             doflux.append(prev+d_frac)
         elif (prev>.01)&(fluxbool[i]==0):
-            doflux.append(prev-d_frac)
+            if keep_on:
+                if prev>1:
+                    doflux.append(1)
+                else:
+                    doflux.append(prev)
+            else:
+                doflux.append(prev-d_frac)
         elif fluxbool[i]==0:
             doflux.append(0)
         elif fluxbool[i]==1:
@@ -1561,7 +1353,11 @@ fp.write('n_rest  = '+str(n_rest)+' # timesteps to next restart\n')
 fp.write('delta_t = '+str(delta_t)+' # clubb timestep in seconds\n')
 fp.write('T0      = '+str(T0)+' # clubb reference temperature\n')
 fp.write('c_ur    = '+str(c_ur)+' # circulation velocity coefficient\n')
+fp.write('cc1     = '+str(cc1)+' # circulation parameter 1\n')
+fp.write('cc2     = '+str(cc2)+' # circulation parameter 2\n')
+fp.write('circ_m  = '+str(circ_m)+' # circulation method\n')
 fp.write('wind frc= '+str(no_wind_frc==False)+' # includes wind forcings?\n')
+fp.write('les frc = '+str(use_LES_frc)+' # uses LES wind forcings?\n')
 fp.write('l_het   = '+str(l_het)+' # lengthscale of heterogeneity\n')
 fp.write('sfc_dir = '+sfc_dir+' # sfc directory\n')
 fp.write('k       = '+str(k)+' # number of columns\n')
@@ -1569,7 +1365,6 @@ fp.write('nx      = '+str(nx)+' # number of gridcells in each direction\n')
 fp.write('dx      = '+str(dx)+' # surface grid resolution\n')
 fp.write('dz      = '+str(dz)+' # vertical grid resolution\n')
 fp.write('zmax    = '+str(zmax)+' # maximum height in clubb\n')
-fp.write('dzc     = '+str(dzc)+' # thickness of circulation\n')
 fp.write('stdate  = '+str(stdate)+' # start date\n')
 fp.write('enddate = '+str(enddate)+' # end date\n')
 fp.write('\nRan at: '+str(datetime.datetime.today()))
@@ -1602,7 +1397,7 @@ for i in range(1,k+1):
 dvpt = np.ones((len(tlist),))*-1
 u_r = np.ones((len(tlist),nz))*-1
 u_r0 = np.ones((len(tlist),nz))*-1
-u_rz=np.ones((2,len(tlist)))*-1
+u_rr=np.ones((2,len(tlist),nz))*-1
 z_circh = np.ones((len(tlist),))*-1
 z_circl = np.ones((len(tlist),))*-1
 dzic = np.ones((len(tlist),))*-1
@@ -1628,7 +1423,7 @@ for i in range(1,len(tlist)):
     rig  = np.zeros((k,nz))
     pa   = np.zeros((k,nz))
     rho_ = np.zeros((k,nz))
-    um   = [0,0]
+    um   = np.zeros((2,nz))
     
 
     try:
@@ -1653,9 +1448,10 @@ for i in range(1,len(tlist)):
 
             # load in windspeed
             if wind_cr:
-                um[0]=np.mean(fp['um'][int(round(n_rest_out-1)),0:25,0,0])
-                um[1]=np.mean(fp['vm'][int(round(n_rest_out-1)),0:25,0,0])
+                um[0,:]=fp['um'][int(round(n_rest_out-1)),:,0,0]
+                um[1,:]=fp['vm'][int(round(n_rest_out-1)),:,0,0]
             fp.close()
+
     except KeyboardInterrupt:
         sys.exit()
         pass
@@ -1678,17 +1474,16 @@ for i in range(1,len(tlist)):
                     data=rig[[k1,k2],:]
                 else:
                     data=thvm[[k1,k2],:]
-                if circ_m=='eb':
-                    dThlm,dRtm,wz_s[:,i,:],u_r[i,:],u_rz[:,i],z_circh[i],\
-                        z_circl[i],dzic[i],u_r0[i,:],dvpt[i],mass_,ke_ = \
-                        eb_circulate(thvmf,rtms[[k1,k2],:],A[[k1,k2]],\
-                        tmps[[k1,k2],:],H2[i,[k1,k2]],W[k1,k2],pa,c_=c_ur*doflux[i],\
-                        cd_=cdirect[k1,k2,:],u_=um,l=l_het,rho=rho_,mass=mass_,KE=ke_)
+                if circ_m=='denv_ds':
+                    data2=Tsfc_interp[i]
+                elif circ_m=='denv_s':
+                    data2=tskin_interp[:,i]
                 else:
-                    dThlm,dRtm,wz_s[:,i,:],u_r[i,:],u_rz[:,i],z_circh[i],z_circl[i],dzic[i],u_r0[i,:],dvpt[i] = \
-                        circulate(data,rtms[[k1,k2],:],A[[k1,k2]],\
-                        tmps[[k1,k2],:],H2[i,[k1,k2]],W[k1,k2],c_=c_ur*doflux[i],\
-                        cd_=cdirect[k1,k2,:],u_=um,l=l_het,pa=pa,urpv=urpvin)
+                    data2=pa
+                dThlm,dRtm,wz_s[:,i,:],u_r[i,:],u_rr[:,i,:],z_circh[i],z_circl[i],dzic[i],u_r0[i,:],dvpt[i] = \
+                    circulate(data,rtms[[k1,k2],:],A[[k1,k2]],\
+                    tmps[[k1,k2],:],H2[i,[k1,k2]],W[k1,k2],c_=c_ur*doflux[i],\
+                    cd_=cdirect[:],u_=um,l=l_het,pa=data2,urpv=urpvin)
 
     for j in list(range(1,k+1)):
         frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
@@ -1771,15 +1566,13 @@ for j in list(range(1,k+1)):
 # output circulation characteristics
 fp=nc.Dataset(w_dir+'/k_'+str(k)+'/clusters.nc','r+')
 fp.createDimension('z',size=nz)
-fp.createDimension('xy',size=2)
 fp.createDimension('t_model',size=len(tlist))
 fp.createVariable('t_model','d',dimensions=('t_model'))
 fp.createVariable('u_r','d',dimensions=('t_model','z'))
 fp.createVariable('z_circh','d',dimensions=('t_model'))
 fp.createVariable('z_circl','d',dimensions=('t_model'))
 fp.createVariable('dz_circ','d',dimensions=('t_model'))
-fp.createVariable('flow_dir','d',dimensions=('clst','clst','xy'))
-fp.createVariable('u_rz','d',dimensions=('clst','t_model'))
+fp.createVariable('u_rr','d',dimensions=('xy','t_model','z'))
 fp.createVariable('u_r0','d',dimensions=('t_model','z'))
 fp.createVariable('dvpt','d',dimensions=('t_model'))
 fp.createVariable('wbar','d',dimensions=('clst','t_model','z'))
@@ -1787,8 +1580,7 @@ fp['u_r'][:]=u_r[:]
 fp['z_circh'][:]=z_circh[:]*dz
 fp['z_circl'][:]=z_circl[:]*dz
 fp['dz_circ'][:]=dzic[:]
-fp['flow_dir'][:]=cdirect[:]
-fp['u_rz'][:]=u_rz[:]
+fp['u_rr'][:]=u_rr[:]
 fp['u_r0'][:]=u_r0[:]
 fp['dvpt'][:]=dvpt[:]
 fp['wbar'][:]=wz_s[:]

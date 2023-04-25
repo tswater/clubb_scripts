@@ -15,8 +15,8 @@ size = comm.Get_size()
 # USER INPUTS #
 # ----------- #
 k = 2
-delta_t = 30 
-lhet = -2
+delta_t = 10 
+lhet = -1
 flux_on = 1
 wind_cr = 1
 cpl_subdir = 'sgp_deleteme/'
@@ -95,8 +95,8 @@ for file in day_list[rank::size]:
         fp=open(sfc_file,'r')
         fp.close()
     
-    t_init  = 36000
-    t_final = 97200
+    t_init  = 36000+3600*2
+    t_final = 97200+3600
     pre_dt = datetime.datetime(int(file[8:12]),int(file[12:14]),int(file[14:16]),0,0)
     stdt = pre_dt+datetime.timedelta(seconds=t_init)
     endt = pre_dt+datetime.timedelta(seconds=t_final)
