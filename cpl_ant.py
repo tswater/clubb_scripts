@@ -343,7 +343,7 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
         vpt_hm=vpt[k_hi,maxzh]
         maxzl=np.argmax((vpt[k_lo,:]-vpt_hm)>0)-1
         try:
-            minzh=np.where((vpt[k_hi,:]-vpt[k_lo,:])<0)[0][0]-1
+            minzh=np.where((vpt[k_hi,:]-vpt[k_lo,:])<0.25)[0][0]-1
         except:
             print('E00: No Crossover point in VPT profiles detected')
             return dThm, dRtm, wbar, 0, urr, 0,0,0,0,0
@@ -353,7 +353,8 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
         
         minzl=minzh
 
-        l_maxzl=min(maxzh-minzl,minzl-1)
+        l_maxzl=minzl-1
+        l_maxzl=int(min((maxzh-minzl)*2,minzl-1))
         l_maxzh=l_maxzl
 
     elif circ_m == 'denv_s':

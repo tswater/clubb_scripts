@@ -100,6 +100,9 @@ for file in filelist:
     if rank==0:
         print(file+': '+str(cf)+' : '+str(sc)) 
 
+    #cf=1.35
+    #sc=-1
+    
     t_init  = 36000+3600*2
     t_final = 97200+3600
     pre_dt = datetime.datetime(int(file[0:4]),int(file[4:6]),int(file[6:8]),0,0)

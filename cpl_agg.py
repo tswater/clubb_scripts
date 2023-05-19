@@ -15,7 +15,7 @@ out_var = {'zm': {'latitude':[],'longitude':[],'altitude':[],'time':[],\
                   'vp2':[],'Richardson_num':[],'bv_freq_sqd':[],'wprtp':[],\
                   'wpthlp':[],'rtp2':[]},\
         'zt': {'latitude':[],'longitude':[],'altitude':[],'time':[],'thlm':[],\
-                  'um':[],'vm':[],'p_in_Pa':[],'rtm':[],'T_in_K':[],'thvm':[],\
+                  'um':[],'vm':[],'p_in_Pa':[],'rtm':[],'rvm':[],'T_in_K':[],'thvm':[],\
                   'ug':[],'vg':[],'wm':[],'cloud_cover':[],'rho':[],'rcm':[],\
                   'wp3':[],'thlp3':[],'rtp3':[],'wpthlp2':[],'wp2thlp':[],\
                   'wprtp2':[],'wp2rtp':[],'Skw_zt':[],'thlm_ma':[],'rtm_ma':[],\
