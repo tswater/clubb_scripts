@@ -19,7 +19,10 @@ out_var = {'zm': {'latitude':[],'longitude':[],'altitude':[],'time':[],\
                   'ug':[],'vg':[],'wm':[],'cloud_cover':[],'rho':[],'rcm':[],\
                   'wp3':[],'thlp3':[],'rtp3':[],'wpthlp2':[],'wp2thlp':[],\
                   'wprtp2':[],'wp2rtp':[],'Skw_zt':[],'thlm_ma':[],'rtm_ma':[],\
-                  'rtm_forcing':[],'thlm_forcing':[]},\
+                  'rtm_forcing':[],'thlm_forcing':[],'mixt_frac':[],'w_1':[],
+                  'varnce_w_1':[],'varnce_w_2':[],'varnce_thl_1':[],'varnce_thl_2':[],\
+                  'varnce_rt_1':[],'varnce_rt_2':[],'w_2':[],'thl_1':[],'thl_2':[],
+                  'rt_1':[],'rt_2':[],'corr_rt_thl_1':[],'corr_rt_thl_2':[]},\
         'sfc':{'latitude':[],'longitude':[],'altitude':[],'time':[],'sh':[],\
                'lh':[],'lwp':[],'ustar':[],'cc':[],'z_cloud_base':[],'T_sfc':[],\
                'z_inversion':[]}}

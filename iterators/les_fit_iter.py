@@ -16,6 +16,7 @@ subdir='apr25_dz60'
 les_dir='/home/tsw35/soteria/clubb/data/les_param2/'
 dt    = 6
 dz    = 60
+agg_only=True
 prs = argparse.ArgumentParser(description='Short sample app')
 prs.add_argument('-d', action='store', dest='dr', default=subdir)
 prs.add_argument('-z', action='store', dest='dz',type=int, default=dz)
@@ -133,8 +134,11 @@ for file in filelist:
     agg_cmds.append(cmd3a)
 
 for i in list(range(len(cmds)))[rank::size]:
-    print('#######\n'+cmds[i]+'\n'+'rank: '+str(rank)+'\n#######')
-    subprocess.run(cmds[i],shell=True)
+    if agg_only:
+        pass
+    else:
+        print('#######\n'+cmds[i]+'\n'+'rank: '+str(rank)+'\n#######')
+        subprocess.run(cmds[i],shell=True)
     print('#######\n'+agg_cmds[i]+'\n'+'rank: '+str(rank)+'\n#######')
     subprocess.run(agg_cmds[i],shell=True)
 

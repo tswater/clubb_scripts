@@ -26,7 +26,7 @@ from inspect import currentframe, getframeinfo
 # run options
 s_rest      = 300 # number of seconds between restarts
 decay_t     = 60*120 # number of seconds to full circulation power
-delta_t     = 30
+delta_t     = 6
 T0          = 300 # reference temperature; matched to CLUBB
 hggt        = 6 # hours after start to use surface as basis for l_het
 vert_circ   = True # if true, will include vertical circulation
@@ -48,14 +48,14 @@ tune_o    = 'X' #'/home/tsw35/soteria/clubb/clubb_scripts/tunable_param/g0.4c110
 
 
 #### DEFAULTS ####
-k       = 1 # number of clusters
+k       = 2 # number of clusters
 nx      = 20 # number of gridcells in each direction
 dx      = 5000  # resolution of surface grid in meters
-dz      = 40 # dz
+dz      = 60 # dz
 zmax    = 12000
 dzc     = 1000
-stdate  = '2016-06-25T12:00:00.000'# start date iso format T10:00:00.000 2017-07-16T11:00:00.000
-enddate = '2016-06-26T04:00:00.000'# end date iso format 2017-07-17T03:00:00.000
+stdate  = '2018-07-09T12:00:00.000'# start date iso format T10:00:00.000 2017-07-16T11:00:00.000
+enddate = '2018-07-10T04:00:00.000'# end date iso format 2017-07-17T03:00:00.000
 dirname = 'test_cpl'
 no_wind_frc = False # if true, will ignore forcings for horiz. wind velocity
 no_omega_frc = False # if true, will ignore vertical wind velocity forcings
@@ -212,7 +212,7 @@ def adv_L(wd_,Axx_):
 
 
 #### COMPUTE CIRCULATION TENDENCIES ####
-def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],cd_=[0,0],cc1=cc1,cc2=cc2,circ_m=circ_m,pa=None,urpv=0):
+def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],cd_=[0,0],cc1=cc1,cc2=cc2,circ_m=circ_m,pa=None,urpv=0,rho_=None):
     """
     from the atmospheric profiles, calculate the tendencies in moisture and
     heat as well as the vertical velocity (w) profile necessary
@@ -352,7 +352,7 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
             return dThm, dRtm, wbar, 0, urr, 0,0,0,0,0
         
         minzl=minzh
-
+        
         l_maxzl=minzl-1
         l_maxzl=int(min((maxzh-minzl)*2,minzl-1))
         l_maxzh=l_maxzl
@@ -433,11 +433,11 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
     urs[urs>(urpv+.5)]=urpv+.5
     
     # compute horizontal circulation
-    vflux = wd*dz_*urs*adj_l
+    vflux = wd*dz_*urs*adj_l*rho_[k_hi,0:l_maxzh]
     vflux_u = np.mean(vflux)*adj_u
     vflux_uhc = np.mean(vflux)*adj_uhc 
-    vflux_lch = wd*dz_*urs*adj_lch
-
+    vflux_lch = wd*dz_*urs*adj_lch*rho_[k_hi,0:l_maxzl]
+    
     Tl_p=np.interp(np.linspace(0,l_maxzh-1,l_maxzh),np.linspace(0,l_maxzh-1,l_maxzl),T[k_lo,0:l_maxzl])
     Rl_p=np.interp(np.linspace(0,l_maxzh-1,l_maxzh),np.linspace(0,l_maxzh-1,l_maxzl),rtm[k_lo,0:l_maxzl])
     
@@ -449,17 +449,17 @@ def circulate(vpt,rtm,Axx,T,H,wd,c_=c_ur,T0=T0,l=l_het,dz_=dz,dzi_=dzi,u_=[0,0],
     Th_p=np.interp(np.linspace(minzl,maxzl-1,maxzl-minzl),np.linspace(minzh,maxzh-1,maxzh-minzh),T[k_hi,minzh:maxzh])
     Rh_p=np.interp(np.linspace(minzl,maxzl-1,maxzl-minzl),np.linspace(minzh,maxzh-1,maxzh-minzh),rtm[k_hi,minzh:maxzh])
     
-    dThm[k_lo,minzl:maxzl]=dThm[k_lo,minzl:maxzl] + (Th_p-T[k_lo,minzl:maxzl])/L*vflux_u/dz_/wd
-    dRtm[k_lo,minzl:maxzl]=dRtm[k_lo,minzl:maxzl] + (Rh_p-rtm[k_lo,minzl:maxzl])/L*vflux_u/dz_/wd
+    dThm[k_lo,minzl:maxzl]=dThm[k_lo,minzl:maxzl] + (Th_p-T[k_lo,minzl:maxzl])/L*vflux_u/dz_/wd/rho_[k_lo,minzl:maxzl]
+    dRtm[k_lo,minzl:maxzl]=dRtm[k_lo,minzl:maxzl] + (Rh_p-rtm[k_lo,minzl:maxzl])/L*vflux_u/dz_/wd/rho_[k_lo,minzl:maxzl]
 
     # compute vertical circulation (k_hi)
     if vert_circ:
-        wbar[k_hi,0:l_maxzh]=np.cumsum(vflux)/Axx[k_hi]*inc
-        wbar[k_hi,l_maxzh:minzh]=wbar[k_hi,l_maxzh-1]
-        wbar[k_hi,minzh:maxzh]=wbar[k_hi,l_maxzh-1]-np.cumsum(vflux_uhc)/Axx[k_hi]*inc
-        wbar[k_lo,0:l_maxzl]=-np.cumsum(vflux_lch)/Axx[k_lo]*inc
-        wbar[k_lo,l_maxzl:minzl]=wbar[k_lo,l_maxzl-1]
-        wbar[k_lo,minzl:maxzl]=wbar[k_lo,l_maxzl-1]+np.cumsum(vflux_u)/Axx[k_lo]*inc
+        wbar[k_hi,0:l_maxzh]=np.cumsum(vflux)/Axx[k_hi]*inc/rho_[k_hi,0:l_maxzh]
+        wbar[k_hi,l_maxzh:minzh]=wbar[k_hi,l_maxzh-1]*rho_[k_hi,l_maxzh]/rho_[k_hi,l_maxzh:minzh]
+        wbar[k_hi,minzh:maxzh]=wbar[k_hi,l_maxzh-1]*np.linspace(1,0,maxzh-minzh)
+        wbar[k_lo,0:l_maxzl]=-np.cumsum(vflux_lch)/Axx[k_lo]*inc/rho_[k_hi,0:l_maxzl]
+        wbar[k_lo,l_maxzl:minzl]=wbar[k_lo,l_maxzl-1]*rho_[k_lo,l_maxzl-1]/rho_[k_lo,l_maxzl:minzl]
+        wbar[k_lo,minzl:maxzl]=wbar[k_lo,l_maxzl-1]*np.linspace(1,0,maxzl-minzl)
     
     # create velocity output 
     ursout=np.zeros((nz_,))
@@ -1484,7 +1484,7 @@ for i in range(1,len(tlist)):
                 dThlm,dRtm,wz_s[:,i,:],u_r[i,:],u_rr[:,i,:],z_circh[i],z_circl[i],dzic[i],u_r0[i,:],dvpt[i] = \
                     circulate(data,rtms[[k1,k2],:],A[[k1,k2]],\
                     tmps[[k1,k2],:],H2[i,[k1,k2]],W[k1,k2],c_=c_ur*doflux[i],\
-                    cd_=cdirect[:],u_=um,l=l_het,pa=data2,urpv=urpvin)
+                    cd_=cdirect[:],u_=um,l=l_het,pa=data2,urpv=urpvin,rho_=rho_[[k1,k2],:])
 
     for j in list(range(1,k+1)):
         frc_file = m_dir+'/c_'+str(j)+'/input/case_setups/arm_forcings.in'
